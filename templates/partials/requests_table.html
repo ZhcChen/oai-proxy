@@ -1,0 +1,38 @@
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>时间</th>
+        <th>Request ID</th>
+        <th>状态</th>
+        <th>方法</th>
+        <th>Endpoint</th>
+        <th>模型</th>
+        <th>上游</th>
+        <th>Attempts</th>
+        <th>Retries</th>
+        <th>HTTP</th>
+        <th>耗时 ms</th>
+        <th>错误</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for request in requests %}
+      <tr>
+        <td><code>{{ request.created_at }}</code></td>
+        <td><code>{{ request.id }}</code></td>
+        <td><span class="status">{{ request.status }}</span></td>
+        <td>{{ request.method }}</td>
+        <td><code>{{ request.endpoint }}</code></td>
+        <td>{{ request.model }}</td>
+        <td>{{ request.upstream_name }}</td>
+        <td>{{ request.attempt_count }}</td>
+        <td>{{ request.retry_count }}</td>
+        <td>{{ request.final_http_status }}</td>
+        <td>{{ request.duration_ms }}</td>
+        <td>{{ request.error_message }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>

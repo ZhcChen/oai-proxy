@@ -1,0 +1,22 @@
+{% extends "layout.html" %}
+
+{% block title %}请求记录 - oai-proxy{% endblock %}
+
+{% block content %}
+<section class="section-title">
+  <div>
+    <h1>请求记录</h1>
+    <p>记录 request 与最终状态；attempt 明细已写入 SQLite，后续可扩展详情页。</p>
+  </div>
+</section>
+
+<section class="card">
+  <div
+    hx-get="/admin/partials/requests"
+    hx-trigger="every 5s"
+    hx-swap="innerHTML"
+  >
+    {% include "partials/requests_table.html" %}
+  </div>
+</section>
+{% endblock %}

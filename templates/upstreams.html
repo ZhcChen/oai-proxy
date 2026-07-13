@@ -1,0 +1,85 @@
+{% extends "layout.html" %}
+
+{% block title %}上游 - oai-proxy{% endblock %}
+
+{% block content %}
+<section class="section-title">
+  <div>
+    <h1>上游渠道</h1>
+    <p>代理会按启用上游顺序串行 attempt；多个上游会轮询切换，单个上游则重新发起新请求。</p>
+  </div>
+</section>
+
+{% if has_error %}
+<div class="alert error">{{ error }}</div>
+{% endif %}
+
+<section class="card">
+  <h2>新增上游</h2>
+  <form class="form-grid" method="post" action="/admin/upstreams">
+    <label>
+      名称
+      <input name="name" placeholder="default" required>
+    </label>
+    <label>
+      Base URL
+      <input name="base_url" placeholder="https://api.example.com" required>
+    </label>
+    <label>
+      API Key
+      <input name="api_key" type="password" placeholder="sk-...">
+    </label>
+    <label>
+      响应头超时覆盖 ms
+      <input name="response_header_timeout_ms" type="number" min="1" placeholder="留空使用全局">
+    </label>
+    <label>
+      首 token 超时覆盖 ms
+      <input name="first_token_timeout_ms" type="number" min="1" placeholder="留空使用全局">
+    </label>
+    <label>
+      最大 attempt 覆盖
+      <input name="max_attempts" type="number" min="1" placeholder="留空使用全局">
+    </label>
+    <label class="checkbox-line">
+      <input name="enabled" type="checkbox" checked>
+      启用
+    </label>
+    <button type="submit">创建上游</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>已配置上游</h2>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>名称</th>
+          <th>Base URL</th>
+          <th>API Key</th>
+          <th>启用</th>
+          <th>Header ms</th>
+          <th>First token ms</th>
+          <th>Max attempts</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for upstream in upstreams %}
+        <tr>
+          <td>{{ upstream.id }}</td>
+          <td>{{ upstream.name }}</td>
+          <td><code>{{ upstream.base_url }}</code></td>
+          <td>{{ upstream.masked_api_key }}</td>
+          <td>{% if upstream.enabled %}是{% else %}否{% endif %}</td>
+          <td>{{ upstream.response_header_timeout_ms }}</td>
+          <td>{{ upstream.first_token_timeout_ms }}</td>
+          <td>{{ upstream.max_attempts }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

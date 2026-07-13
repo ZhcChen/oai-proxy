@@ -1,0 +1,40 @@
+{% extends "layout.html" %}
+
+{% block title %}配置 - oai-proxy{% endblock %}
+
+{% block content %}
+<section class="section-title">
+  <div>
+    <h1>全局配置</h1>
+    <p>这些配置会在每次代理请求开始时读取，用于控制请求体缓存、响应头等待和首 token 等待。</p>
+  </div>
+</section>
+
+{% if has_message %}
+<div class="alert success">{{ message }}</div>
+{% endif %}
+
+<form class="card form-grid" method="post" action="/admin/settings" hx-post="/admin/settings" hx-target="body" hx-swap="outerHTML">
+  <label>
+    请求体上限 bytes
+    <input name="max_body_bytes" type="number" min="1" value="{{ settings.max_body_bytes }}">
+  </label>
+  <label>
+    等待响应头超时 ms
+    <input name="response_header_timeout_ms" type="number" min="1" value="{{ settings.response_header_timeout_ms }}">
+  </label>
+  <label>
+    首 token 超时 ms
+    <input name="first_token_timeout_ms" type="number" min="1" value="{{ settings.first_token_timeout_ms }}">
+  </label>
+  <label>
+    最大 attempt
+    <input name="max_attempts" type="number" min="1" value="{{ settings.max_attempts }}">
+  </label>
+  <label class="checkbox-line">
+    <input name="auto_retry_enabled" type="checkbox" {% if settings.auto_retry_enabled %}checked{% endif %}>
+    启用自动重试
+  </label>
+  <button type="submit">保存配置</button>
+</form>
+{% endblock %}
