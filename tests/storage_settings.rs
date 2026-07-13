@@ -40,9 +40,6 @@ fn test_config() -> AppConfig {
     AppConfig {
         bind_host: "127.0.0.1".to_string(),
         database_url: "sqlite::memory:".to_string(),
-        admin_token: "admin".to_string(),
-        admin_token_is_default: true,
-        admin_session_token: "session".to_string(),
         data_dir: PathBuf::from("data"),
         default_max_body_bytes: 2048,
         default_response_header_timeout_ms: 123,

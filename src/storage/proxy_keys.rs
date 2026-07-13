@@ -1,9 +1,18 @@
 use std::env;
 
+use serde::Serialize;
 use sha2::{Digest, Sha256};
-use sqlx::SqlitePool;
+use sqlx::{FromRow, SqlitePool};
 
 use super::now;
+
+#[derive(Clone, Debug, FromRow, Serialize)]
+pub struct ProxyKeyView {
+    pub id: i64,
+    pub name: String,
+    pub enabled: i64,
+    pub created_at: String,
+}
 
 pub async fn seed_from_env(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     let Some(key_secret) = env::var("OAI_PROXY_PROXY_KEY")
@@ -41,6 +50,26 @@ pub async fn create(pool: &SqlitePool, name: &str, key_secret: &str) -> Result<i
     .await?;
 
     Ok(result.last_insert_rowid())
+}
+
+pub async fn name_exists(pool: &SqlitePool, name: &str) -> Result<bool, sqlx::Error> {
+    let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM proxy_keys WHERE name = ?1")
+        .bind(name.trim())
+        .fetch_one(pool)
+        .await?;
+    Ok(row.0 > 0)
+}
+
+pub async fn list_all(pool: &SqlitePool) -> Result<Vec<ProxyKeyView>, sqlx::Error> {
+    sqlx::query_as::<_, ProxyKeyView>(
+        r#"
+        SELECT id, name, enabled, created_at
+        FROM proxy_keys
+        ORDER BY id DESC
+        "#,
+    )
+    .fetch_all(pool)
+    .await
 }
 
 pub async fn is_authorized(

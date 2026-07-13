@@ -1,29 +1,22 @@
 use askama::Template;
 use axum::{
     extract::{Form, State},
-    http::{HeaderMap, HeaderValue, StatusCode, header},
-    response::{Html, IntoResponse, Redirect, Response},
+    http::{HeaderMap, HeaderValue, header},
+    response::{Html, IntoResponse, Response},
 };
 use serde::Deserialize;
+use uuid::Uuid;
 
 use crate::{
     app::AppState,
     error::AppError,
     storage::{
+        proxy_keys::{self, ProxyKeyView},
         records::{self, RequestRecord},
         settings::{self, RuntimeSettings},
         upstreams::{self, NewUpstream, UpstreamView},
     },
 };
-
-use super::auth;
-
-#[derive(Template)]
-#[template(path = "login.html")]
-struct LoginTemplate {
-    error: String,
-    has_error: bool,
-}
 
 #[derive(Template)]
 #[template(path = "dashboard.html")]
@@ -40,6 +33,10 @@ struct DashboardTemplate {
 #[template(path = "settings.html")]
 struct SettingsTemplate {
     settings: RuntimeSettings,
+    api_base_url: String,
+    proxy_keys: Vec<ProxyKeyTemplateView>,
+    generated_api_key: String,
+    has_generated_api_key: bool,
     message: String,
     has_message: bool,
 }
@@ -62,6 +59,25 @@ struct RequestsTemplate {
 #[template(path = "partials/requests_table.html")]
 struct RequestsTableTemplate {
     requests: Vec<RequestRecordView>,
+}
+
+#[derive(Clone)]
+struct ProxyKeyTemplateView {
+    id: i64,
+    name: String,
+    enabled_label: String,
+    created_at: String,
+}
+
+impl From<ProxyKeyView> for ProxyKeyTemplateView {
+    fn from(key: ProxyKeyView) -> Self {
+        Self {
+            id: key.id,
+            name: key.name,
+            enabled_label: if key.enabled == 1 { "启用" } else { "停用" }.to_string(),
+            created_at: key.created_at,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -106,11 +122,6 @@ impl From<RequestRecord> for RequestRecordView {
 }
 
 #[derive(Deserialize)]
-pub struct LoginForm {
-    token: String,
-}
-
-#[derive(Deserialize)]
 pub struct SettingsForm {
     max_body_bytes: i64,
     response_header_timeout_ms: i64,
@@ -130,60 +141,12 @@ pub struct CreateUpstreamForm {
     max_attempts: Option<String>,
 }
 
-pub async fn login_page(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Result<Response, AppError> {
-    if auth::is_authenticated(&headers, &state.config) {
-        return Ok(Redirect::to("/admin").into_response());
-    }
-
-    render(LoginTemplate {
-        error: String::new(),
-        has_error: false,
-    })
+#[derive(Deserialize)]
+pub struct GenerateApiKeyForm {
+    name: Option<String>,
 }
 
-pub async fn login(
-    State(state): State<AppState>,
-    Form(form): Form<LoginForm>,
-) -> Result<Response, AppError> {
-    if form.token == state.config.admin_token {
-        let mut response = Redirect::to("/admin").into_response();
-        response.headers_mut().insert(
-            header::SET_COOKIE,
-            HeaderValue::from_str(&auth::login_cookie(&state.config))
-                .map_err(|error| AppError::Internal(error.to_string()))?,
-        );
-        return Ok(response);
-    }
-
-    let mut response = render(LoginTemplate {
-        error: "管理员 token 不正确".to_string(),
-        has_error: true,
-    })?;
-    *response.status_mut() = StatusCode::UNAUTHORIZED;
-    Ok(response)
-}
-
-pub async fn logout() -> Result<Response, AppError> {
-    let mut response = Redirect::to("/admin/login").into_response();
-    response.headers_mut().insert(
-        header::SET_COOKIE,
-        HeaderValue::from_str(&auth::logout_cookie())
-            .map_err(|error| AppError::Internal(error.to_string()))?,
-    );
-    Ok(response)
-}
-
-pub async fn dashboard(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Result<Response, AppError> {
-    if !auth::is_authenticated(&headers, &state.config) {
-        return Ok(Redirect::to("/admin/login").into_response());
-    }
-
+pub async fn dashboard(State(state): State<AppState>) -> Result<Response, AppError> {
     let settings = settings::get_runtime_settings(&state.pool, &state.config).await?;
     let requests = records::list_recent_requests(&state.pool, 10)
         .await?
@@ -205,13 +168,8 @@ pub async fn settings_page(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    require_admin(&state, &headers)?;
     let settings = settings::get_runtime_settings(&state.pool, &state.config).await?;
-    render(SettingsTemplate {
-        settings,
-        message: String::new(),
-        has_message: false,
-    })
+    render_settings(&state, &headers, settings, "", false, "", false).await
 }
 
 pub async fn save_settings(
@@ -219,7 +177,6 @@ pub async fn save_settings(
     headers: HeaderMap,
     Form(form): Form<SettingsForm>,
 ) -> Result<Response, AppError> {
-    require_admin(&state, &headers)?;
     validate_positive(form.max_body_bytes, "max_body_bytes")?;
     validate_positive(
         form.response_header_timeout_ms,
@@ -236,30 +193,73 @@ pub async fn save_settings(
         auto_retry_enabled: form.auto_retry_enabled.is_some(),
     };
     settings::save_runtime_settings(&state.pool, &runtime_settings).await?;
-    render(SettingsTemplate {
-        settings: runtime_settings,
-        message: "配置已保存".to_string(),
-        has_message: true,
-    })
+    render_settings(
+        &state,
+        &headers,
+        runtime_settings,
+        "配置已保存",
+        true,
+        "",
+        false,
+    )
+    .await
 }
 
-pub async fn upstreams_page(
+pub async fn generate_api_key(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Form(form): Form<GenerateApiKeyForm>,
 ) -> Result<Response, AppError> {
-    require_admin(&state, &headers)?;
+    let settings = settings::get_runtime_settings(&state.pool, &state.config).await?;
+    let secret = format!("opk_{}", Uuid::new_v4().simple());
+    let name = form
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| format!("key-{}", Uuid::new_v4().simple()));
+    if proxy_keys::name_exists(&state.pool, &name).await? {
+        return render_settings(
+            &state,
+            &headers,
+            settings,
+            "API Key 名称已存在，请换一个名称。",
+            true,
+            "",
+            false,
+        )
+        .await;
+    }
+
+    proxy_keys::create(&state.pool, &name, &secret).await?;
+    let mut response = render_settings(
+        &state,
+        &headers,
+        settings,
+        "API Key 已生成，请立即复制保存。页面刷新后不会再显示明文。",
+        true,
+        &secret,
+        true,
+    )
+    .await?;
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-store, max-age=0"),
+    );
+    Ok(response)
+}
+
+pub async fn upstreams_page(State(state): State<AppState>) -> Result<Response, AppError> {
     render_upstreams(&state, "", false).await
 }
 
 pub async fn create_upstream(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Form(form): Form<CreateUpstreamForm>,
 ) -> Result<Response, AppError> {
-    require_admin(&state, &headers)?;
-
     if form.name.trim().is_empty() || form.base_url.trim().is_empty() {
-        return render_upstreams(&state, "名称和 base URL 必填", true).await;
+        return render_upstreams(&state, "名称和上游服务地址必填", true).await;
     }
 
     let upstream = NewUpstream {
@@ -278,11 +278,7 @@ pub async fn create_upstream(
     }
 }
 
-pub async fn requests_page(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Result<Response, AppError> {
-    require_admin(&state, &headers)?;
+pub async fn requests_page(State(state): State<AppState>) -> Result<Response, AppError> {
     let requests = records::list_recent_requests(&state.pool, 100)
         .await?
         .into_iter()
@@ -291,17 +287,39 @@ pub async fn requests_page(
     render(RequestsTemplate { requests })
 }
 
-pub async fn requests_partial(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Result<Response, AppError> {
-    require_admin(&state, &headers)?;
+pub async fn requests_partial(State(state): State<AppState>) -> Result<Response, AppError> {
     let requests = records::list_recent_requests(&state.pool, 100)
         .await?
         .into_iter()
         .map(RequestRecordView::from)
         .collect();
     render(RequestsTableTemplate { requests })
+}
+
+async fn render_settings(
+    state: &AppState,
+    headers: &HeaderMap,
+    settings: RuntimeSettings,
+    message: &str,
+    has_message: bool,
+    generated_api_key: &str,
+    has_generated_api_key: bool,
+) -> Result<Response, AppError> {
+    let proxy_keys = proxy_keys::list_all(&state.pool)
+        .await?
+        .into_iter()
+        .map(ProxyKeyTemplateView::from)
+        .collect();
+
+    render(SettingsTemplate {
+        settings,
+        api_base_url: api_base_url(headers),
+        proxy_keys,
+        generated_api_key: generated_api_key.to_string(),
+        has_generated_api_key,
+        message: message.to_string(),
+        has_message,
+    })
 }
 
 async fn render_upstreams(
@@ -319,14 +337,6 @@ async fn render_upstreams(
         error: error.to_string(),
         has_error,
     })
-}
-
-fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<(), AppError> {
-    if auth::is_authenticated(headers, &state.config) {
-        Ok(())
-    } else {
-        Err(AppError::Unauthorized("unauthorized".to_string()))
-    }
 }
 
 fn validate_positive(value: i64, field: &str) -> Result<(), AppError> {
@@ -357,4 +367,33 @@ fn parse_optional_i64(value: Option<String>) -> Result<Option<i64>, AppError> {
 
 fn render<T: Template>(template: T) -> Result<Response, AppError> {
     Ok(Html(template.render()?).into_response())
+}
+
+fn api_base_url(headers: &HeaderMap) -> String {
+    let proto = first_header_value(headers, "x-forwarded-proto")
+        .filter(|value| matches!(*value, "http" | "https"))
+        .unwrap_or("http");
+    let host = first_header_value(headers, "x-forwarded-host")
+        .or_else(|| first_header_value(headers, header::HOST.as_str()))
+        .filter(|value| is_valid_authority(value))
+        .unwrap_or("127.0.0.1:57999");
+    format!("{proto}://{host}")
+}
+
+fn first_header_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn is_valid_authority(value: &str) -> bool {
+    !value.contains('/')
+        && !value.contains('\\')
+        && !value.contains('@')
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | ':' | '[' | ']'))
 }

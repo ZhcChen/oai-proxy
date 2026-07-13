@@ -47,7 +47,7 @@ async fn forwards_request_and_rewrites_sensitive_headers() -> anyhow::Result<()>
                 .method("POST")
                 .uri("/v1/chat/completions?trace=1")
                 .header("authorization", "Bearer client-key")
-                .header("cookie", "oai_proxy_admin=session")
+                .header("cookie", "browser_cookie=should-not-forward")
                 .header("x-trace", "abc")
                 .header("content-type", "application/json")
                 .body(Body::from(
@@ -150,6 +150,52 @@ async fn no_enabled_upstream_returns_503() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn generated_proxy_key_is_required_when_present() -> anyhow::Result<()> {
+    let captures = Captures::default();
+    let upstream_url = spawn_capture_upstream(captures.clone()).await?;
+    let (router, pool) = test_router_with_upstream(&upstream_url, 1024 * 1024).await?;
+    storage::proxy_keys::create(&pool, "client", "valid-proxy-key").await?;
+
+    let no_auth = router.clone().oneshot(proxy_request(None)?).await?;
+    assert_eq!(no_auth.status(), StatusCode::UNAUTHORIZED);
+
+    let bad_auth = router
+        .clone()
+        .oneshot(proxy_request(Some("Bearer wrong-key"))?)
+        .await?;
+    assert_eq!(bad_auth.status(), StatusCode::UNAUTHORIZED);
+
+    let ok = router
+        .oneshot(proxy_request(Some("Bearer valid-proxy-key"))?)
+        .await?;
+    assert_eq!(ok.status(), StatusCode::OK);
+    let captured = captures
+        .lock()
+        .unwrap()
+        .pop()
+        .expect("upstream captured request");
+    assert_eq!(
+        captured.authorization.as_deref(),
+        Some("Bearer upstream-key")
+    );
+    Ok(())
+}
+
+fn proxy_request(authorization: Option<&str>) -> anyhow::Result<Request<Body>> {
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("content-type", "application/json");
+    if let Some(authorization) = authorization {
+        builder = builder.header("authorization", authorization);
+    }
+
+    Ok(builder.body(Body::from(
+        r#"{"model":"test-model","stream":false,"messages":[]}"#,
+    ))?)
+}
+
 async fn spawn_capture_upstream(captures: Captures) -> anyhow::Result<String> {
     let app = Router::new()
         .route("/v1/chat/completions", post(capture_handler))
@@ -231,9 +277,6 @@ fn test_config() -> AppConfig {
     AppConfig {
         bind_host: "127.0.0.1".to_string(),
         database_url: "sqlite::memory:".to_string(),
-        admin_token: "admin".to_string(),
-        admin_token_is_default: true,
-        admin_session_token: "session".to_string(),
         data_dir: PathBuf::from("data"),
         default_max_body_bytes: 1024 * 1024,
         default_response_header_timeout_ms: 1000,

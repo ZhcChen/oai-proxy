@@ -14,6 +14,64 @@
 <div class="alert success">{{ message }}</div>
 {% endif %}
 
+<section class="card">
+  <div class="section-title">
+    <div>
+      <h2>客户端接入信息</h2>
+      <p>Base URL 根据当前访问域名自动生成，不需要手工配置。</p>
+    </div>
+  </div>
+  <dl class="settings-list">
+    <div><dt>Base URL</dt><dd><code>{{ api_base_url }}</code></dd></div>
+    <div><dt>Chat Completions</dt><dd><code>{{ api_base_url }}/v1/chat/completions</code></dd></div>
+    <div><dt>Responses</dt><dd><code>{{ api_base_url }}/v1/responses</code></dd></div>
+  </dl>
+</section>
+
+<section class="card">
+  <div class="section-title">
+    <div>
+      <h2>代理 API Key</h2>
+      <p>生成后客户端通过 <code>Authorization: Bearer &lt;api_key&gt;</code> 调用代理入口。</p>
+    </div>
+  </div>
+  {% if has_generated_api_key %}
+  <div class="alert success">
+    <strong>新 API Key：</strong>
+    <code>{{ generated_api_key }}</code>
+  </div>
+  {% endif %}
+  <form class="form-grid" method="post" action="/admin/api-keys" hx-post="/admin/api-keys" hx-target="body" hx-swap="outerHTML">
+    <label>
+      名称
+      <input name="name" placeholder="例如 laptop / server / client-a">
+    </label>
+    <button type="submit">生成 API Key</button>
+  </form>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>名称</th>
+          <th>状态</th>
+          <th>创建时间</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for key in proxy_keys %}
+        <tr>
+          <td>{{ key.id }}</td>
+          <td>{{ key.name }}</td>
+          <td>{{ key.enabled_label }}</td>
+          <td><code>{{ key.created_at }}</code></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
 <form class="card form-grid" method="post" action="/admin/settings" hx-post="/admin/settings" hx-target="body" hx-swap="outerHTML">
   <label>
     请求体上限 bytes

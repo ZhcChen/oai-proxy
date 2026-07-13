@@ -60,7 +60,7 @@ origin: docs/brainstorms/first-token-failover-proxy-requirements.md
 - 不复制 `sub2api` 的账号管理、支付、计费、复杂调度和管理后台体系。
 - 第一阶段不做 WebSocket 转发，不做 WS 首 token 超时。
 - 第一阶段不做并发抢跑 / hedged request。
-- 第一阶段不做多用户后台系统；只做单管理员入口。
+- 第一阶段不做多用户后台系统；后台页面不内置登录，部署侧按需保护 `/admin/*`。
 - 第一阶段默认不保存完整请求体和响应体，避免隐私与存储膨胀。
 - 第一阶段不优先支持图片、音频、视频生成流。
 
@@ -127,9 +127,10 @@ origin: docs/brainstorms/first-token-failover-proxy-requirements.md
 
 - **配置以 SQLite 为运行时真源，环境变量只做启动和敏感引导。**
   - 固定端口 `57999` 不做端口配置。
-  - `OAI_PROXY_BIND` 可选控制绑定地址，默认建议 `0.0.0.0` 或部署侧明确指定。
-  - `OAI_PROXY_ADMIN_TOKEN` 或首次启动生成的管理员 token 用于后台登录。
-  - 上游 API key 存 SQLite，但 UI 和日志必须脱敏。
+  - `OAI_PROXY_BIND` 可选控制绑定地址，默认 `127.0.0.1`。
+  - 后台页面不做登录授权；公网部署建议用反向代理限制 `/admin/*`。
+  - 客户端 Base URL 根据访问域名自动展示，不作为配置项保存。
+  - 代理入口 API Key 在配置页生成，存储为摘要；上游 API key 存 SQLite，但 UI 和日志必须脱敏。
 
 - **API 和后台共端口，路径隔离。**
   - `/admin/*`：管理页面和 htmx partial。
@@ -303,7 +304,6 @@ attempt loop
 
 **Files:**
 - Create: `src/admin/mod.rs`
-- Create: `src/admin/auth.rs`
 - Create: `src/admin/handlers.rs`
 - Create: `package.json`
 - Create: `package-lock.json`
@@ -324,7 +324,8 @@ attempt loop
 - 使用 npm 本地下载 `htmx.org` 与 `@heroui/styles`，把发布产物复制到
   `static/vendor/`；模板只引用本地路径。
 - HeroUI React 组件不进入运行时，避免破坏 HTML + htmx 的服务端渲染架构。
-- 管理登录使用单管理员 token + HttpOnly cookie，不做多用户系统。
+- 管理页面不提供登录页，不使用后台授权 token。
+- 配置页展示按当前域名推导的客户端 Base URL，并生成代理入口 API Key。
 - `/admin/requests` 支持按状态、模型、上游、时间窗口过滤。
 
 **Patterns to follow:**
@@ -333,15 +334,16 @@ attempt loop
 - HeroUI styles 包的本地 CSS 产物，不使用 CDN。
 
 **Test scenarios:**
-- Happy path: 登录后访问 `/admin` 返回 dashboard HTML。
+- Happy path: 无登录访问 `/admin` 返回 dashboard HTML。
+- Happy path: 配置页按当前 Host 展示客户端 Base URL。
+- Happy path: 配置页生成代理入口 API Key。
 - Happy path: 修改 first token timeout 后，页面 partial 显示更新后的值。
 - Happy path: 请求记录列表 htmx endpoint 返回表格 fragment。
-- Error path: 未登录访问 `/admin/settings` 跳转或返回 401。
 - Error path: 无效配置值返回表单级错误，不写入数据库。
 
 **Verification:**
 - 不写自定义前端框架也能完成配置和查看记录。
-- 页面所有敏感 token 均脱敏显示。
+- 页面所有持久化敏感 token 均脱敏显示；新生成的代理 API Key 只在生成响应中一次性明文展示。
 
 - [x] **Unit 4: HTTP 代理入口与上游转发**
 
@@ -486,9 +488,9 @@ AttemptStarted
 
 本轮实现按第一阶段 MVP 收敛完成，和计划初稿相比有以下落地调整：
 
-- 默认绑定地址改为 `127.0.0.1`；非 loopback 绑定时禁止使用默认管理员 token。
-- 管理 Cookie 使用进程内随机 session token，并限制 `Path=/admin`；代理转发显式跳过
-  `Cookie`，避免后台凭据进入上游。
+- 默认绑定地址为 `127.0.0.1`；后台页面不提供登录页，不使用后台授权 token。
+- 配置页根据当前访问域名自动展示客户端 Base URL，并生成代理入口 API Key。
+- 代理转发显式跳过 `Cookie`，避免浏览器或反向代理 Cookie 进入上游。
 - `proxy_keys` 在 SQLite 中存储 SHA-256 摘要；上游 API key 仍需可逆使用，当前以本地
   SQLite 明文保存，依赖文件权限保护，后续可增强为系统密钥链或本机加密。
 - SSE 首 token 提交后，request/attempt 记录延迟到流结束、流错误或客户端断开时更新，
@@ -523,7 +525,7 @@ AttemptStarted
   - Mitigation: 对 prefix buffer 设置大小上限；超过上限视为 attempt 失败或直接提交当前流。
 
 - **后台配置暴露上游 key。**
-  - Mitigation: 管理页面必须鉴权；所有 token 脱敏；日志不打印 secrets。
+  - Mitigation: 所有 token 脱敏；日志不打印 secrets；公网部署应由反向代理保护 `/admin/*`。
 
 - **SQLite 写入影响代理延迟。**
   - Mitigation: 主路径只写必要记录；可用 bounded channel 异步写 attempt record，
@@ -533,8 +535,8 @@ AttemptStarted
 
 - `README.md` 需要说明：
   - 固定端口 `57999`；
-  - 首次启动和 admin token；
-  - upstream 配置；
+  - 后台无登录、客户端 Base URL 自动推导、API Key 在页面生成；
+  - 上游服务配置；
   - HeroUI/htmx 静态资产来自本地 `static/vendor/`，不依赖 CDN；
   - response header timeout 与 first token timeout 区别；
   - WS 暂不支持。
@@ -543,7 +545,6 @@ AttemptStarted
   - Docker；
   - systemd 或 launchd 可选。
 - 默认安全建议：
-  - 如果暴露公网，必须配置 admin token；
   - 建议反向代理只开放 `/v1/*` 给客户端，后台路径按需加额外访问控制。
 
 ## Sources & References

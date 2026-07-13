@@ -7,7 +7,6 @@ async fn main() -> anyhow::Result<()> {
     init_tracing();
 
     let config = AppConfig::from_env();
-    config.validate_startup().map_err(anyhow::Error::msg)?;
     tokio::fs::create_dir_all(&config.data_dir).await?;
     let pool = storage::connect(&config.database_url).await?;
     storage::migrate(&pool).await?;

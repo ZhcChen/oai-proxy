@@ -1,5 +1,6 @@
 use axum::{
     Router,
+    response::Redirect,
     routing::{get, post},
 };
 use reqwest::Client;
@@ -34,17 +35,13 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/metrics", get(observability::metrics::metrics))
-        .route("/", get(admin::handlers::dashboard))
+        .route("/", get(root))
         .route("/admin", get(admin::handlers::dashboard))
-        .route(
-            "/admin/login",
-            get(admin::handlers::login_page).post(admin::handlers::login),
-        )
-        .route("/admin/logout", post(admin::handlers::logout))
         .route(
             "/admin/settings",
             get(admin::handlers::settings_page).post(admin::handlers::save_settings),
         )
+        .route("/admin/api-keys", post(admin::handlers::generate_api_key))
         .route(
             "/admin/upstreams",
             get(admin::handlers::upstreams_page).post(admin::handlers::create_upstream),
@@ -64,6 +61,10 @@ pub fn router(state: AppState) -> Router {
 
 async fn healthz() -> &'static str {
     "ok"
+}
+
+async fn root() -> Redirect {
+    Redirect::to("/admin")
 }
 
 async fn not_found() -> (axum::http::StatusCode, &'static str) {
