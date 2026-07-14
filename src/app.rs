@@ -1,7 +1,11 @@
 use axum::{Router, response::Redirect, routing::get};
 use reqwest::Client;
 use sqlx::SqlitePool;
-use tower_http::{services::ServeDir, trace::TraceLayer};
+use tower_http::{
+    services::ServeDir,
+    trace::{DefaultOnFailure, TraceLayer},
+};
+use tracing::Level;
 
 use crate::{
     admin, config::AppConfig, error::AppError, observability, proxy, recording::RecordWriter,
@@ -68,7 +72,7 @@ pub fn router(state: AppState) -> Router {
         .nest_service("/static", ServeDir::new("static"))
         .fallback(proxy::routes::proxy_openai)
         .method_not_allowed_fallback(proxy::routes::proxy_openai)
-        .layer(TraceLayer::new_for_http())
+        .layer(TraceLayer::new_for_http().on_failure(DefaultOnFailure::new().level(Level::WARN)))
         .with_state(state)
 }
 

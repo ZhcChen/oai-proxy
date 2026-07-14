@@ -27,7 +27,7 @@ pub struct RuntimeSettings {
 impl RuntimeSettings {
     pub fn from_config(config: &AppConfig) -> Self {
         Self {
-            policy_enabled: false,
+            policy_enabled: true,
             request_record_enabled: true,
             response_header_timeout_ms: config.default_response_header_timeout_ms,
             first_token_timeout_ms: config.default_first_token_timeout_ms,

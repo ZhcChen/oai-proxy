@@ -13,7 +13,7 @@ async fn ensure_defaults_and_update_runtime_settings() -> anyhow::Result<()> {
 
     let defaults = storage::settings::get_runtime_settings(&pool, &config).await?;
     assert_eq!(defaults.first_token_timeout_ms, 456);
-    assert!(!defaults.policy_enabled);
+    assert!(defaults.policy_enabled);
     assert!(defaults.request_record_enabled);
     assert!(defaults.auto_retry_enabled);
 

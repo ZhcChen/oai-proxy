@@ -88,7 +88,7 @@ async fn legacy_settings_post_preserves_new_switches() -> anyhow::Result<()> {
     assert_eq!(response.status(), StatusCode::OK);
 
     let settings = storage::settings::get_runtime_settings(&pool, &test_config()).await?;
-    assert!(!settings.policy_enabled);
+    assert!(settings.policy_enabled);
     assert!(settings.request_record_enabled);
     assert_eq!(settings.response_header_timeout_ms, 111);
     Ok(())

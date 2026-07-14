@@ -60,6 +60,11 @@ async fn legacy_upstreams_migrate_to_one_enabled_base_url_without_keys() -> anyh
         include_str!("../migrations/0006_rebalance_default_timeouts.sql"),
     )
     .await?;
+    apply_sql(
+        &pool,
+        include_str!("../migrations/0007_enable_policy_by_default.sql"),
+    )
+    .await?;
 
     assert_eq!(table_exists(&pool, "proxy_keys").await?, 0);
     assert_eq!(table_exists(&pool, "request_payloads").await?, 1);
@@ -113,6 +118,11 @@ async fn legacy_disabled_only_upstreams_migrate_to_unconfigured_state() -> anyho
     apply_sql(
         &pool,
         include_str!("../migrations/0006_rebalance_default_timeouts.sql"),
+    )
+    .await?;
+    apply_sql(
+        &pool,
+        include_str!("../migrations/0007_enable_policy_by_default.sql"),
     )
     .await?;
 
@@ -210,6 +220,35 @@ async fn custom_timeout_settings_are_not_overwritten_by_default_rebalance() -> a
     assert_eq!(
         setting_value(&pool, "first_token_timeout_ms").await?,
         "12000"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn legacy_policy_default_is_enabled_for_strategy_layer() -> anyhow::Result<()> {
+    let pool = storage::connect("sqlite::memory:").await?;
+    apply_sql(&pool, include_str!("../migrations/0001_initial.sql")).await?;
+    sqlx::query(
+        r#"
+        INSERT INTO settings (key, value, updated_at)
+        VALUES
+            ('policy_enabled', 'false', '2026-01-01T00:00:00Z'),
+            ('request_record_enabled', 'true', '2026-01-01T00:00:00Z')
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+
+    apply_sql(
+        &pool,
+        include_str!("../migrations/0007_enable_policy_by_default.sql"),
+    )
+    .await?;
+
+    assert_eq!(setting_value(&pool, "policy_enabled").await?, "true");
+    assert_eq!(
+        setting_value(&pool, "request_record_enabled").await?,
+        "true"
     );
     Ok(())
 }
