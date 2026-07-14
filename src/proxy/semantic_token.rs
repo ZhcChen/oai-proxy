@@ -11,9 +11,9 @@ pub enum EndpointKind {
 
 impl EndpointKind {
     pub fn from_path(path: &str) -> Self {
-        if path.ends_with("/v1/chat/completions") {
+        if path.ends_with("/v1/chat/completions") || path.ends_with("/chat/completions") {
             Self::ChatCompletions
-        } else if path.ends_with("/v1/responses") {
+        } else if path.ends_with("/v1/responses") || path.ends_with("/responses") {
             Self::Responses
         } else {
             Self::Unknown

@@ -120,6 +120,33 @@ async fn forwards_responses_endpoint() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
+async fn forwards_bare_responses_endpoint_for_codex_cli() -> anyhow::Result<()> {
+    let captures = Captures::default();
+    let upstream_url = spawn_capture_upstream(captures.clone()).await?;
+    let (router, _pool) = test_router_with_upstream(&upstream_url).await?;
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/responses?trace=codex")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"model":"test-model","input":"hi"}"#))?,
+        )
+        .await?;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let captured = captures
+        .lock()
+        .unwrap()
+        .pop()
+        .expect("upstream captured request");
+    assert_eq!(captured.method, "POST");
+    assert_eq!(captured.path_and_query, "/responses?trace=codex");
+    Ok(())
+}
+
+#[tokio::test]
 async fn no_upstream_returns_503() -> anyhow::Result<()> {
     let config = test_config();
     let pool = storage::connect(&config.database_url).await?;
@@ -395,6 +422,7 @@ async fn spawn_capture_upstream(captures: Captures) -> anyhow::Result<String> {
     let app = Router::new()
         .route("/v1/chat/completions", post(capture_handler))
         .route("/v1/responses", post(capture_handler))
+        .route("/responses", post(capture_handler))
         .with_state(captures);
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;

@@ -20,13 +20,13 @@ async fn healthz_returns_ok() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
-async fn unknown_route_returns_404() -> anyhow::Result<()> {
+async fn unmatched_route_enters_proxy_fallback() -> anyhow::Result<()> {
     let router = test_router().await?;
     let response = router
         .oneshot(Request::builder().uri("/missing").body(Body::empty())?)
         .await?;
 
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     Ok(())
 }
 

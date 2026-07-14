@@ -6,7 +6,8 @@
 服务固定监听 `57999` 端口，同一端口提供：
 
 - 管理页面：`/admin`
-- 转发入口：`/v1/chat/completions`、`/v1/responses`
+- 转发入口：除已注册的管理、静态资源、健康检查和指标路由外，其余 HTTP 路径都会透明转发；
+  常见路径包括 `/v1/chat/completions`、`/v1/responses`、`/responses`
 - 健康检查：`/healthz`
 - 基础指标：`/metrics`
 
@@ -48,6 +49,8 @@ cargo run
 直接启动后在上游页面配置服务提供方 Base URL。客户端 Base URL 会根据当前访问
 域名自动展示，不需要手工设置。请求中的 `Authorization`、自定义 header、query
 和 body 会原样转发到上游；上游不再单独配置 API Key。
+代理不会强制要求客户端路径带 `/v1`：例如 Codex CLI 请求 `/responses` 时也会被
+原样转发到上游 Base URL 后的 `/responses`。
 
 所有配置保存到 SQLite，服务启动时加载到内存缓存；通过后台页面保存配置或保存
 上游 Base URL 后，会立即刷新内存缓存。请求记录也保存到 SQLite，但代理热路径只把
@@ -83,6 +86,9 @@ cargo run
     响应头耗时、首 token 耗时、完整响应耗时异步写入 SQLite。
   - 关闭：代理仍工作，但不写业务请求记录。
 - 上游只保留一个全局 Base URL。未配置时转发入口返回 OpenAI-compatible 503。
+- 转发路径按透明代理处理：客户端请求什么路径，代理就把同一路径拼到上游
+  Base URL 后面。因此如果客户端请求 `/responses`，而上游真实入口是 `/v1/responses`，
+  应把上游 Base URL 配成带 `/v1` 的地址。
 
 ## 前端资产
 
@@ -112,6 +118,15 @@ curl http://127.0.0.1:57999/v1/chat/completions \
   -d '{"model":"gpt-example","stream":true,"messages":[{"role":"user","content":"hi"}]}'
 ```
 
+Codex CLI 等客户端如果请求的是裸路径，也可以直接使用同一个代理地址：
+
+```bash
+curl http://127.0.0.1:57999/responses \
+  -H 'authorization: Bearer upstream-api-key' \
+  -H 'content-type: application/json' \
+  -d '{"model":"gpt-example","input":"hi"}'
+```
+
 ## 验证
 
 ```bash
@@ -121,7 +136,7 @@ cargo test
 
 当前测试覆盖：
 
-- `/healthz` 与 404
+- `/healthz` 与未匹配路径进入透明代理 fallback
 - SQLite 默认设置、请求记录与 attempt 记录
 - 无登录后台、自动 Base URL 展示、单上游 Base URL 配置、请求记录 partial、`/metrics`
 - 非流式代理转发、header/query/body 透传、Authorization/Cookie/Set-Cookie 透传

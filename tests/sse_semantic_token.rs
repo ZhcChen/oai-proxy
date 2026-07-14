@@ -4,6 +4,27 @@ use oai_proxy::proxy::{
 };
 
 #[test]
+fn endpoint_kind_supports_v1_and_bare_paths() {
+    assert_eq!(
+        EndpointKind::from_path("/v1/chat/completions"),
+        EndpointKind::ChatCompletions
+    );
+    assert_eq!(
+        EndpointKind::from_path("/chat/completions"),
+        EndpointKind::ChatCompletions
+    );
+    assert_eq!(
+        EndpointKind::from_path("/v1/responses"),
+        EndpointKind::Responses
+    );
+    assert_eq!(
+        EndpointKind::from_path("/responses"),
+        EndpointKind::Responses
+    );
+    assert_eq!(EndpointKind::from_path("/models"), EndpointKind::Unknown);
+}
+
+#[test]
 fn chat_completion_role_delta_is_not_semantic() {
     let event = parse_one(b"data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n");
     assert!(!is_semantic_event(EndpointKind::ChatCompletions, &event));

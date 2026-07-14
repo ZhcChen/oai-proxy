@@ -1,8 +1,4 @@
-use axum::{
-    Router,
-    response::Redirect,
-    routing::{get, post},
-};
+use axum::{Router, response::Redirect, routing::get};
 use reqwest::Client;
 use sqlx::SqlitePool;
 use tower_http::{services::ServeDir, trace::TraceLayer};
@@ -69,10 +65,8 @@ pub fn router(state: AppState) -> Router {
             "/admin/partials/requests",
             get(admin::handlers::requests_partial),
         )
-        .route("/v1/chat/completions", post(proxy::routes::proxy_openai))
-        .route("/v1/responses", post(proxy::routes::proxy_openai))
         .nest_service("/static", ServeDir::new("static"))
-        .fallback(get(not_found))
+        .fallback(proxy::routes::proxy_openai)
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
@@ -83,8 +77,4 @@ async fn healthz() -> &'static str {
 
 async fn root() -> Redirect {
     Redirect::to("/admin")
-}
-
-async fn not_found() -> (axum::http::StatusCode, &'static str) {
-    (axum::http::StatusCode::NOT_FOUND, "not found")
 }
