@@ -86,6 +86,138 @@ async fn request_and_attempt_records_are_listed_newest_first() -> anyhow::Result
     Ok(())
 }
 
+#[tokio::test]
+async fn traffic_stats_summarize_latencies_and_timeout_attempts() -> anyhow::Result<()> {
+    let config = test_config();
+    let pool = storage::connect(&config.database_url).await?;
+    storage::migrate(&pool).await?;
+
+    seed_request_with_attempt(
+        &pool,
+        SeedAttempt {
+            request_id: "req-success",
+            attempt_id: "attempt-success",
+            request_status: "success",
+            attempt_status: "success",
+            response_header_ms: Some(12),
+            first_token_ms: Some(35),
+            timeout_reason: None,
+            emitted_to_client: true,
+            duration_ms: 120,
+        },
+    )
+    .await?;
+    seed_request_with_attempt(
+        &pool,
+        SeedAttempt {
+            request_id: "req-token-timeout",
+            attempt_id: "attempt-token-timeout",
+            request_status: "exhausted_timeout",
+            attempt_status: "first_token_timeout",
+            response_header_ms: Some(8),
+            first_token_ms: Some(1000),
+            timeout_reason: Some("first_token_timeout"),
+            emitted_to_client: false,
+            duration_ms: 340,
+        },
+    )
+    .await?;
+    seed_request_with_attempt(
+        &pool,
+        SeedAttempt {
+            request_id: "req-header-timeout",
+            attempt_id: "attempt-header-timeout",
+            request_status: "exhausted_timeout",
+            attempt_status: "response_header_timeout",
+            response_header_ms: None,
+            first_token_ms: None,
+            timeout_reason: Some("response_header_timeout"),
+            emitted_to_client: false,
+            duration_ms: 220,
+        },
+    )
+    .await?;
+
+    let stats = storage::records::traffic_stats(&pool).await?;
+    assert_eq!(stats.first_token_min_ms, Some(35));
+    assert_eq!(stats.first_token_max_ms, Some(35));
+    assert_eq!(stats.response_min_ms, Some(120));
+    assert_eq!(stats.response_max_ms, Some(340));
+    assert_eq!(stats.timeout_filtered_attempts, 2);
+    assert_eq!(stats.response_header_timeout_attempts, 1);
+    assert_eq!(stats.first_token_timeout_attempts, 1);
+    Ok(())
+}
+
+struct SeedAttempt<'a> {
+    request_id: &'a str,
+    attempt_id: &'a str,
+    request_status: &'a str,
+    attempt_status: &'a str,
+    response_header_ms: Option<i64>,
+    first_token_ms: Option<i64>,
+    timeout_reason: Option<&'a str>,
+    emitted_to_client: bool,
+    duration_ms: i64,
+}
+
+async fn seed_request_with_attempt(
+    pool: &sqlx::SqlitePool,
+    seed: SeedAttempt<'_>,
+) -> anyhow::Result<()> {
+    storage::records::create_request(
+        pool,
+        &NewRequestRecord {
+            id: seed.request_id.to_string(),
+            method: "POST".to_string(),
+            endpoint: "/responses".to_string(),
+            model: Some("model-a".to_string()),
+        },
+    )
+    .await?;
+    storage::records::create_attempt(
+        pool,
+        &NewAttemptRecord {
+            id: seed.attempt_id.to_string(),
+            request_id: seed.request_id.to_string(),
+            attempt_index: 1,
+            upstream_id: Some(1),
+            upstream_name: "default".to_string(),
+        },
+    )
+    .await?;
+    storage::records::finish_attempt(
+        pool,
+        seed.attempt_id,
+        &FinishAttempt {
+            status: seed.attempt_status.to_string(),
+            http_status: Some(200),
+            response_header_ms: seed.response_header_ms,
+            first_token_ms: seed.first_token_ms,
+            timeout_reason: seed.timeout_reason.map(str::to_string),
+            error_message: seed.timeout_reason.map(str::to_string),
+            emitted_to_client: seed.emitted_to_client,
+        },
+    )
+    .await?;
+    storage::records::complete_request(
+        pool,
+        seed.request_id,
+        seed.request_status,
+        Some("default"),
+        1,
+        Some(200),
+        seed.timeout_reason,
+    )
+    .await?;
+    sqlx::query("UPDATE request_records SET duration_ms = ?2 WHERE id = ?1")
+        .bind(seed.request_id)
+        .bind(seed.duration_ms)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 fn test_config() -> AppConfig {
     AppConfig {
         bind_host: "127.0.0.1".to_string(),

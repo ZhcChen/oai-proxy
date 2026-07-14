@@ -17,6 +17,11 @@ async fn admin_dashboard_renders_without_login() -> anyhow::Result<()> {
         .await?;
 
     assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await?;
+    let text = String::from_utf8_lossy(&body);
+    assert!(text.contains("请求耗时与超时过滤"));
+    assert!(text.contains("首 token 最低"));
+    assert!(text.contains("响应头超时"));
     Ok(())
 }
 

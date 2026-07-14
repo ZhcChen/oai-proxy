@@ -10,7 +10,7 @@ use crate::{
     app::AppState,
     error::AppError,
     storage::{
-        records::{self, RequestRecord},
+        records::{self, RequestRecord, TrafficStats},
         settings::{self, RuntimeSettings},
         upstreams::{self, UpstreamError, UpstreamView},
     },
@@ -24,6 +24,7 @@ struct DashboardTemplate {
     total_requests: i64,
     success_requests: i64,
     timeout_requests: i64,
+    traffic_stats: TrafficStatsView,
     requests: Vec<RequestRecordView>,
 }
 
@@ -81,6 +82,31 @@ struct RequestRecordView {
     error_message: String,
 }
 
+#[derive(Clone)]
+struct TrafficStatsView {
+    first_token_min_ms: String,
+    first_token_max_ms: String,
+    response_min_ms: String,
+    response_max_ms: String,
+    timeout_filtered_attempts: i64,
+    response_header_timeout_attempts: i64,
+    first_token_timeout_attempts: i64,
+}
+
+impl From<TrafficStats> for TrafficStatsView {
+    fn from(stats: TrafficStats) -> Self {
+        Self {
+            first_token_min_ms: format_optional_ms(stats.first_token_min_ms),
+            first_token_max_ms: format_optional_ms(stats.first_token_max_ms),
+            response_min_ms: format_optional_ms(stats.response_min_ms),
+            response_max_ms: format_optional_ms(stats.response_max_ms),
+            timeout_filtered_attempts: stats.timeout_filtered_attempts,
+            response_header_timeout_attempts: stats.response_header_timeout_attempts,
+            first_token_timeout_attempts: stats.first_token_timeout_attempts,
+        }
+    }
+}
+
 impl From<RequestRecord> for RequestRecordView {
     fn from(record: RequestRecord) -> Self {
         Self {
@@ -124,6 +150,12 @@ impl From<RequestRecord> for RequestRecordView {
     }
 }
 
+fn format_optional_ms(value: Option<i64>) -> String {
+    value
+        .map(|value| format!("{value} ms"))
+        .unwrap_or_else(|| "-".to_string())
+}
+
 fn complete_label(value: Option<i64>) -> String {
     match value {
         Some(1) => "完整".to_string(),
@@ -162,6 +194,7 @@ pub async fn dashboard(State(state): State<AppState>) -> Result<Response, AppErr
         success_requests: records::count_by_status(&state.pool, "success").await?
             + records::count_by_status(&state.pool, "retried_success").await?,
         timeout_requests: records::count_by_status(&state.pool, "exhausted_timeout").await?,
+        traffic_stats: TrafficStatsView::from(records::traffic_stats(&state.pool).await?),
         requests,
     })
 }

@@ -63,6 +63,25 @@
 <section class="card">
   <div class="card-header">
     <div>
+      <span class="eyebrow">Traffic statistics</span>
+      <h2>请求耗时与超时过滤</h2>
+      <p>首 token 只统计已收到语义 token 的 attempt；超时 attempt 单独统计。</p>
+    </div>
+  </div>
+  <dl class="settings-list">
+    <div><dt>首 token 最低</dt><dd>{{ traffic_stats.first_token_min_ms }}</dd></div>
+    <div><dt>首 token 最高</dt><dd>{{ traffic_stats.first_token_max_ms }}</dd></div>
+    <div><dt>完整响应最低</dt><dd>{{ traffic_stats.response_min_ms }}</dd></div>
+    <div><dt>完整响应最高</dt><dd>{{ traffic_stats.response_max_ms }}</dd></div>
+    <div><dt>超时已过滤</dt><dd>{{ traffic_stats.timeout_filtered_attempts }}</dd></div>
+    <div><dt>响应头超时</dt><dd>{{ traffic_stats.response_header_timeout_attempts }}</dd></div>
+    <div><dt>首 token 超时</dt><dd>{{ traffic_stats.first_token_timeout_attempts }}</dd></div>
+  </dl>
+</section>
+
+<section class="card">
+  <div class="card-header">
+    <div>
       <span class="eyebrow">Recent traffic</span>
       <h2>最近请求</h2>
     </div>

@@ -87,6 +87,17 @@ pub struct AttemptRecord {
     pub duration_ms: Option<i64>,
 }
 
+#[derive(Clone, Debug, FromRow, Serialize)]
+pub struct TrafficStats {
+    pub first_token_min_ms: Option<i64>,
+    pub first_token_max_ms: Option<i64>,
+    pub response_min_ms: Option<i64>,
+    pub response_max_ms: Option<i64>,
+    pub timeout_filtered_attempts: i64,
+    pub response_header_timeout_attempts: i64,
+    pub first_token_timeout_attempts: i64,
+}
+
 pub async fn create_request(
     pool: &SqlitePool,
     record: &NewRequestRecord,
@@ -519,4 +530,52 @@ pub async fn total_requests(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
         .fetch_one(pool)
         .await?;
     Ok(row.0)
+}
+
+pub async fn traffic_stats(pool: &SqlitePool) -> Result<TrafficStats, sqlx::Error> {
+    sqlx::query_as::<_, TrafficStats>(
+        r#"
+        SELECT
+            (
+                SELECT MIN(first_token_ms)
+                FROM attempt_records
+                WHERE first_token_ms IS NOT NULL
+                  AND timeout_reason IS NULL
+            ) AS first_token_min_ms,
+            (
+                SELECT MAX(first_token_ms)
+                FROM attempt_records
+                WHERE first_token_ms IS NOT NULL
+                  AND timeout_reason IS NULL
+            ) AS first_token_max_ms,
+            (
+                SELECT MIN(duration_ms)
+                FROM request_records
+                WHERE duration_ms IS NOT NULL
+            ) AS response_min_ms,
+            (
+                SELECT MAX(duration_ms)
+                FROM request_records
+                WHERE duration_ms IS NOT NULL
+            ) AS response_max_ms,
+            (
+                SELECT COUNT(*)
+                FROM attempt_records
+                WHERE timeout_reason IN ('response_header_timeout', 'first_token_timeout')
+                  AND emitted_to_client = 0
+            ) AS timeout_filtered_attempts,
+            (
+                SELECT COUNT(*)
+                FROM attempt_records
+                WHERE timeout_reason = 'response_header_timeout'
+            ) AS response_header_timeout_attempts,
+            (
+                SELECT COUNT(*)
+                FROM attempt_records
+                WHERE timeout_reason = 'first_token_timeout'
+            ) AS first_token_timeout_attempts
+        "#,
+    )
+    .fetch_one(pool)
+    .await
 }
