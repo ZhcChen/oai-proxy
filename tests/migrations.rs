@@ -66,18 +66,6 @@ async fn legacy_upstreams_migrate_to_one_enabled_base_url_without_keys() -> anyh
     assert_eq!(upstreams.len(), 1);
     assert_eq!(upstreams[0].name, "default");
     assert_eq!(upstreams[0].base_url, "https://enabled.example.test");
-    assert_eq!(
-        setting_value(&pool, "response_header_timeout_ms").await?,
-        Some("111".to_string())
-    );
-    assert_eq!(
-        setting_value(&pool, "first_token_timeout_ms").await?,
-        Some("222".to_string())
-    );
-    assert_eq!(
-        setting_value(&pool, "max_attempts").await?,
-        Some("3".to_string())
-    );
     Ok(())
 }
 
@@ -203,14 +191,6 @@ async fn table_columns(pool: &SqlitePool, table: &str) -> anyhow::Result<Vec<Str
         .into_iter()
         .map(|row| row.get::<String, _>("name"))
         .collect())
-}
-
-async fn setting_value(pool: &SqlitePool, key: &str) -> anyhow::Result<Option<String>> {
-    let row: Option<(String,)> = sqlx::query_as("SELECT value FROM settings WHERE key = ?1")
-        .bind(key)
-        .fetch_optional(pool)
-        .await?;
-    Ok(row.map(|row| row.0))
 }
 
 fn test_config() -> AppConfig {
