@@ -67,6 +67,7 @@ pub fn router(state: AppState) -> Router {
         )
         .nest_service("/static", ServeDir::new("static"))
         .fallback(proxy::routes::proxy_openai)
+        .method_not_allowed_fallback(proxy::routes::proxy_openai)
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }

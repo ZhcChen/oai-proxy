@@ -14,7 +14,7 @@ use axum::{
     extract::State,
     http::{HeaderMap, HeaderValue, Method, Request, StatusCode, Uri, header},
     response::IntoResponse,
-    routing::post,
+    routing::{any, post},
 };
 use futures_util::stream;
 use oai_proxy::{
@@ -143,6 +143,34 @@ async fn forwards_bare_responses_endpoint_for_codex_cli() -> anyhow::Result<()> 
         .expect("upstream captured request");
     assert_eq!(captured.method, "POST");
     assert_eq!(captured.path_and_query, "/responses?trace=codex");
+    Ok(())
+}
+
+#[tokio::test]
+async fn forwards_non_post_method_instead_of_returning_405() -> anyhow::Result<()> {
+    let captures = Captures::default();
+    let upstream_url = spawn_capture_upstream(captures.clone()).await?;
+    let (router, _pool) = test_router_with_upstream(&upstream_url).await?;
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/admin?trace=method")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"op":"transparent"}"#))?,
+        )
+        .await?;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let captured = captures
+        .lock()
+        .unwrap()
+        .pop()
+        .expect("upstream captured request");
+    assert_eq!(captured.method, "PATCH");
+    assert_eq!(captured.path_and_query, "/admin?trace=method");
+    assert_eq!(captured.body, r#"{"op":"transparent"}"#);
     Ok(())
 }
 
@@ -420,9 +448,10 @@ fn proxy_request(authorization: Option<&str>) -> anyhow::Result<Request<Body>> {
 
 async fn spawn_capture_upstream(captures: Captures) -> anyhow::Result<String> {
     let app = Router::new()
-        .route("/v1/chat/completions", post(capture_handler))
-        .route("/v1/responses", post(capture_handler))
-        .route("/responses", post(capture_handler))
+        .route("/v1/chat/completions", any(capture_handler))
+        .route("/v1/responses", any(capture_handler))
+        .route("/responses", any(capture_handler))
+        .route("/admin", any(capture_handler))
         .with_state(captures);
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;

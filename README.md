@@ -6,7 +6,8 @@
 服务固定监听 `57999` 端口，同一端口提供：
 
 - 管理页面：`/admin`
-- 转发入口：除已注册的管理、静态资源、健康检查和指标路由外，其余 HTTP 路径都会透明转发；
+- 转发入口：已注册的管理、静态资源、健康检查和指标路由按各自合法方法优先处理；
+  其余 HTTP 路径或未被控制面接收的方法都会透明转发；
   常见路径包括 `/v1/chat/completions`、`/v1/responses`、`/responses`
 - 健康检查：`/healthz`
 - 基础指标：`/metrics`
@@ -51,6 +52,8 @@ cargo run
 和 body 会原样转发到上游；上游不再单独配置 API Key。
 代理不会强制要求客户端路径带 `/v1`：例如 Codex CLI 请求 `/responses` 时也会被
 原样转发到上游 Base URL 后的 `/responses`。
+代理层不限制 HTTP method；客户端使用 `GET`、`POST`、`PATCH`、`DELETE` 等方法时，
+都会按原 method 转发给上游。
 
 所有配置保存到 SQLite，服务启动时加载到内存缓存；通过后台页面保存配置或保存
 上游 Base URL 后，会立即刷新内存缓存。请求记录也保存到 SQLite，但代理热路径只把
@@ -89,6 +92,8 @@ cargo run
 - 转发路径按透明代理处理：客户端请求什么路径，代理就把同一路径拼到上游
   Base URL 后面。因此如果客户端请求 `/responses`，而上游真实入口是 `/v1/responses`，
   应把上游 Base URL 配成带 `/v1` 的地址。
+- 转发方法按透明代理处理：客户端请求什么 HTTP method，代理就使用同一个 method
+  请求上游，不把代理入口限制为 `POST`。
 
 ## 前端资产
 
