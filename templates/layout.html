@@ -18,10 +18,10 @@
         </span>
       </a>
       <nav>
-        <a href="/admin">概览</a>
-        <a href="/admin/settings">配置</a>
-        <a href="/admin/upstreams">上游</a>
-        <a href="/admin/requests">请求记录</a>
+        <a class="{% if active_nav == "dashboard" %}active{% endif %}" href="/admin" {% if active_nav == "dashboard" %}aria-current="page"{% endif %}>概览</a>
+        <a class="{% if active_nav == "settings" %}active{% endif %}" href="/admin/settings" {% if active_nav == "settings" %}aria-current="page"{% endif %}>配置</a>
+        <a class="{% if active_nav == "upstreams" %}active{% endif %}" href="/admin/upstreams" {% if active_nav == "upstreams" %}aria-current="page"{% endif %}>上游</a>
+        <a class="{% if active_nav == "requests" %}active{% endif %}" href="/admin/requests" {% if active_nav == "requests" %}aria-current="page"{% endif %}>请求记录</a>
       </nav>
     </header>
     <main class="page">

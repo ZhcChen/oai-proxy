@@ -22,6 +22,9 @@ async fn admin_dashboard_renders_without_login() -> anyhow::Result<()> {
     assert!(text.contains("请求耗时与超时过滤"));
     assert!(text.contains("首 token 最低"));
     assert!(text.contains("响应头超时"));
+    assert!(text.contains("aria-current=\"page\">概览"));
+    assert!(!text.contains("Recent traffic"));
+    assert!(!text.contains("<h2>最近请求</h2>"));
     Ok(())
 }
 
@@ -63,6 +66,7 @@ async fn settings_page_renders_base_url_from_request_host() -> anyhow::Result<()
     let text = String::from_utf8_lossy(&body);
     assert!(text.contains("https://proxy.example.test"));
     assert!(text.contains("/v1/chat/completions"));
+    assert!(text.contains("aria-current=\"page\">配置"));
     assert!(!text.contains("代理 API Key"));
     assert!(!text.contains("/admin/api-keys"));
     assert!(!text.contains("opk_"));
@@ -204,6 +208,7 @@ async fn upstreams_page_only_renders_single_base_url_form() -> anyhow::Result<()
     let body = to_bytes(response.into_body(), usize::MAX).await?;
     let text = String::from_utf8_lossy(&body);
     assert!(text.contains("上游 Base URL"));
+    assert!(text.contains("aria-current=\"page\">上游"));
     assert!(text.contains("name=\"base_url\""));
     assert!(!text.contains("name=\"name\""));
     assert!(!text.contains("name=\"api_key\""));
@@ -227,11 +232,146 @@ async fn requests_partial_renders_fragment_without_login() -> anyhow::Result<()>
     Ok(())
 }
 
+#[tokio::test]
+async fn requests_page_renders_pagination_and_active_nav() -> anyhow::Result<()> {
+    let router = test_router_with_requests(30).await?;
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/admin/requests?page=2")
+                .body(Body::empty())?,
+        )
+        .await?;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await?;
+    let text = String::from_utf8_lossy(&body);
+    assert!(text.contains("aria-current=\"page\">请求记录"));
+    assert!(text.contains("第 <strong>2</strong> / 2 页"));
+    assert!(text.contains("显示 26-30 / 30 条"));
+    assert!(text.contains("hx-get=\"/admin/partials/requests?page=2\""));
+    assert!(text.contains("href=\"/admin/requests?page=1\""));
+    assert!(text.contains("aria-disabled=\"true\">下一页"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn requests_partial_respects_requested_page() -> anyhow::Result<()> {
+    let router = test_router_with_requests(30).await?;
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/admin/partials/requests?page=2")
+                .body(Body::empty())?,
+        )
+        .await?;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await?;
+    let text = String::from_utf8_lossy(&body);
+    assert!(text.contains("第 <strong>2</strong> / 2 页"));
+    assert!(text.contains("显示 26-30 / 30 条"));
+    assert!(text.contains("req-04"));
+    assert!(!text.contains("req-29"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn requests_page_clamps_invalid_and_out_of_range_pages() -> anyhow::Result<()> {
+    let router = test_router_with_requests(30).await?;
+
+    let negative = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/admin/requests?page=-8")
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(negative.status(), StatusCode::OK);
+    let body = to_bytes(negative.into_body(), usize::MAX).await?;
+    let text = String::from_utf8_lossy(&body);
+    assert!(text.contains("第 <strong>1</strong> / 2 页"));
+    assert!(text.contains("显示 1-25 / 30 条"));
+
+    let too_large = router
+        .oneshot(
+            Request::builder()
+                .uri("/admin/requests?page=999")
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(too_large.status(), StatusCode::OK);
+    let body = to_bytes(too_large.into_body(), usize::MAX).await?;
+    let text = String::from_utf8_lossy(&body);
+    assert!(text.contains("第 <strong>2</strong> / 2 页"));
+    assert!(text.contains("显示 26-30 / 30 条"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn requests_page_handles_empty_records() -> anyhow::Result<()> {
+    let router = test_router().await?;
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/admin/requests")
+                .body(Body::empty())?,
+        )
+        .await?;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await?;
+    let text = String::from_utf8_lossy(&body);
+    assert!(text.contains("第 <strong>1</strong> / 1 页"));
+    assert!(text.contains("显示 0-0 / 0 条"));
+    assert!(text.contains("aria-disabled=\"true\">上一页"));
+    assert!(text.contains("aria-disabled=\"true\">下一页"));
+    Ok(())
+}
+
 async fn test_router() -> anyhow::Result<axum::Router> {
     let config = test_config();
     let pool = storage::connect(&config.database_url).await?;
     storage::migrate(&pool).await?;
     storage::settings::ensure_defaults(&pool, &config).await?;
+    let state = app::AppState::new(config, pool).await?;
+    Ok(app::router(state))
+}
+
+async fn test_router_with_requests(count: usize) -> anyhow::Result<axum::Router> {
+    let config = test_config();
+    let pool = storage::connect(&config.database_url).await?;
+    storage::migrate(&pool).await?;
+    storage::settings::ensure_defaults(&pool, &config).await?;
+    for index in 0..count {
+        let request_id = format!("req-{index:02}");
+        storage::records::create_request(
+            &pool,
+            &storage::records::NewRequestRecord {
+                id: request_id.clone(),
+                method: "POST".to_string(),
+                endpoint: "/responses".to_string(),
+                model: Some("model-a".to_string()),
+            },
+        )
+        .await?;
+        storage::records::complete_request(
+            &pool,
+            &request_id,
+            "success",
+            Some("default"),
+            1,
+            Some(200),
+            None,
+        )
+        .await?;
+        sqlx::query("UPDATE request_records SET created_at = ?2 WHERE id = ?1")
+            .bind(&request_id)
+            .bind(format!("2026-07-14T00:00:{index:02}.000Z"))
+            .execute(&pool)
+            .await?;
+    }
     let state = app::AppState::new(config, pool).await?;
     Ok(app::router(state))
 }

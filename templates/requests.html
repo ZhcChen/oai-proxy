@@ -15,12 +15,13 @@
   <div class="card-header">
     <div>
       <span class="eyebrow">Auto refresh</span>
-      <h2>最近请求</h2>
+      <h2>请求列表</h2>
     </div>
-    <span class="pill">每 5 秒刷新</span>
+    <span class="pill">每 5 秒刷新当前页</span>
   </div>
   <div
-    hx-get="/admin/partials/requests"
+    id="requests-panel"
+    hx-get="/admin/partials/requests?page={{ pagination.page }}"
     hx-trigger="every 5s"
     hx-swap="innerHTML"
   >

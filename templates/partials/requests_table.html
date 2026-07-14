@@ -1,3 +1,22 @@
+<div class="pagination-bar">
+  <div class="pagination-info">
+    第 <strong>{{ pagination.page }}</strong> / {{ pagination.total_pages }} 页
+    <span>显示 {{ pagination.start_item }}-{{ pagination.end_item }} / {{ pagination.total_items }} 条</span>
+  </div>
+  <div class="pagination-actions" aria-label="请求记录分页">
+    {% if pagination.has_previous %}
+    <a class="pagination-link" href="/admin/requests?page={{ pagination.previous_page }}" hx-get="/admin/partials/requests?page={{ pagination.previous_page }}" hx-target="#requests-panel" hx-swap="innerHTML" hx-push-url="/admin/requests?page={{ pagination.previous_page }}">上一页</a>
+    {% else %}
+    <span class="pagination-link disabled" aria-disabled="true">上一页</span>
+    {% endif %}
+    {% if pagination.has_next %}
+    <a class="pagination-link" href="/admin/requests?page={{ pagination.next_page }}" hx-get="/admin/partials/requests?page={{ pagination.next_page }}" hx-target="#requests-panel" hx-swap="innerHTML" hx-push-url="/admin/requests?page={{ pagination.next_page }}">下一页</a>
+    {% else %}
+    <span class="pagination-link disabled" aria-disabled="true">下一页</span>
+    {% endif %}
+  </div>
+</div>
+
 <div class="table-wrap">
   <table>
     <thead>

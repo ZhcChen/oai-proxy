@@ -87,6 +87,38 @@ async fn request_and_attempt_records_are_listed_newest_first() -> anyhow::Result
 }
 
 #[tokio::test]
+async fn request_records_can_be_listed_by_page() -> anyhow::Result<()> {
+    let config = test_config();
+    let pool = storage::connect(&config.database_url).await?;
+    storage::migrate(&pool).await?;
+
+    for index in 0..30 {
+        let request_id = format!("req-{index:02}");
+        storage::records::create_request(
+            &pool,
+            &NewRequestRecord {
+                id: request_id.clone(),
+                method: "POST".to_string(),
+                endpoint: "/responses".to_string(),
+                model: Some("model-a".to_string()),
+            },
+        )
+        .await?;
+        sqlx::query("UPDATE request_records SET created_at = ?2 WHERE id = ?1")
+            .bind(&request_id)
+            .bind(format!("2026-07-14T00:00:{index:02}.000Z"))
+            .execute(&pool)
+            .await?;
+    }
+
+    let page = storage::records::list_requests_page(&pool, 10, 10).await?;
+    assert_eq!(page.len(), 10);
+    assert_eq!(page[0].id, "req-19");
+    assert_eq!(page[9].id, "req-10");
+    Ok(())
+}
+
+#[tokio::test]
 async fn traffic_stats_summarize_latencies_and_timeout_attempts() -> anyhow::Result<()> {
     let config = test_config();
     let pool = storage::connect(&config.database_url).await?;

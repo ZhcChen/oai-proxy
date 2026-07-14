@@ -438,6 +438,14 @@ pub async fn list_recent_requests(
     pool: &SqlitePool,
     limit: i64,
 ) -> Result<Vec<RequestRecord>, sqlx::Error> {
+    list_requests_page(pool, limit, 0).await
+}
+
+pub async fn list_requests_page(
+    pool: &SqlitePool,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<RequestRecord>, sqlx::Error> {
     sqlx::query_as::<_, RequestRecord>(
         r#"
         SELECT
@@ -477,11 +485,12 @@ pub async fn list_recent_requests(
         FROM request_records
         LEFT JOIN request_payloads
           ON request_payloads.request_id = request_records.id
-        ORDER BY created_at DESC
-        LIMIT ?1
+        ORDER BY created_at DESC, request_records.id DESC
+        LIMIT ?1 OFFSET ?2
         "#,
     )
     .bind(limit)
+    .bind(offset)
     .fetch_all(pool)
     .await
 }

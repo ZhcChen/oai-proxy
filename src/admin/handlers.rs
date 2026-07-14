@@ -1,6 +1,6 @@
 use askama::Template;
 use axum::{
-    extract::{Form, State},
+    extract::{Form, Query, State},
     http::{HeaderMap, header},
     response::{Html, IntoResponse, Response},
 };
@@ -16,21 +16,28 @@ use crate::{
     },
 };
 
+const ACTIVE_NAV_DASHBOARD: &str = "dashboard";
+const ACTIVE_NAV_SETTINGS: &str = "settings";
+const ACTIVE_NAV_UPSTREAMS: &str = "upstreams";
+const ACTIVE_NAV_REQUESTS: &str = "requests";
+const REQUESTS_PAGE_SIZE: i64 = 25;
+
 #[derive(Template)]
 #[template(path = "dashboard.html")]
 struct DashboardTemplate {
+    active_nav: &'static str,
     settings: RuntimeSettings,
     upstream_count: i64,
     total_requests: i64,
     success_requests: i64,
     timeout_requests: i64,
     traffic_stats: TrafficStatsView,
-    requests: Vec<RequestRecordView>,
 }
 
 #[derive(Template)]
 #[template(path = "settings.html")]
 struct SettingsTemplate {
+    active_nav: &'static str,
     settings: RuntimeSettings,
     api_base_url: String,
     message: String,
@@ -40,6 +47,7 @@ struct SettingsTemplate {
 #[derive(Template)]
 #[template(path = "upstreams.html")]
 struct UpstreamsTemplate {
+    active_nav: &'static str,
     upstream: UpstreamView,
     has_upstream: bool,
     message: String,
@@ -51,13 +59,16 @@ struct UpstreamsTemplate {
 #[derive(Template)]
 #[template(path = "requests.html")]
 struct RequestsTemplate {
+    active_nav: &'static str,
     requests: Vec<RequestRecordView>,
+    pagination: PaginationView,
 }
 
 #[derive(Template)]
 #[template(path = "partials/requests_table.html")]
 struct RequestsTableTemplate {
     requests: Vec<RequestRecordView>,
+    pagination: PaginationView,
 }
 
 #[derive(Clone)]
@@ -91,6 +102,19 @@ struct TrafficStatsView {
     timeout_filtered_attempts: i64,
     response_header_timeout_attempts: i64,
     first_token_timeout_attempts: i64,
+}
+
+#[derive(Clone)]
+struct PaginationView {
+    page: i64,
+    total_pages: i64,
+    total_items: i64,
+    start_item: i64,
+    end_item: i64,
+    has_previous: bool,
+    has_next: bool,
+    previous_page: i64,
+    next_page: i64,
 }
 
 impl From<TrafficStats> for TrafficStatsView {
@@ -180,14 +204,15 @@ pub struct SaveUpstreamForm {
     base_url: String,
 }
 
+#[derive(Deserialize)]
+pub struct RequestPageQuery {
+    page: Option<i64>,
+}
+
 pub async fn dashboard(State(state): State<AppState>) -> Result<Response, AppError> {
     let settings = state.runtime.snapshot().settings;
-    let requests = records::list_recent_requests(&state.pool, 10)
-        .await?
-        .into_iter()
-        .map(RequestRecordView::from)
-        .collect();
     render(DashboardTemplate {
+        active_nav: ACTIVE_NAV_DASHBOARD,
         settings,
         upstream_count: upstreams::count_configured(&state.pool).await?,
         total_requests: records::total_requests(&state.pool).await?,
@@ -195,7 +220,6 @@ pub async fn dashboard(State(state): State<AppState>) -> Result<Response, AppErr
             + records::count_by_status(&state.pool, "retried_success").await?,
         timeout_requests: records::count_by_status(&state.pool, "exhausted_timeout").await?,
         traffic_stats: TrafficStatsView::from(records::traffic_stats(&state.pool).await?),
-        requests,
     })
 }
 
@@ -274,22 +298,73 @@ pub async fn save_upstream(
     }
 }
 
-pub async fn requests_page(State(state): State<AppState>) -> Result<Response, AppError> {
-    let requests = records::list_recent_requests(&state.pool, 100)
-        .await?
-        .into_iter()
-        .map(RequestRecordView::from)
-        .collect();
-    render(RequestsTemplate { requests })
+pub async fn requests_page(
+    State(state): State<AppState>,
+    Query(query): Query<RequestPageQuery>,
+) -> Result<Response, AppError> {
+    let page = build_requests_page(&state, query.page).await?;
+    render(RequestsTemplate {
+        active_nav: ACTIVE_NAV_REQUESTS,
+        requests: page.requests,
+        pagination: page.pagination,
+    })
 }
 
-pub async fn requests_partial(State(state): State<AppState>) -> Result<Response, AppError> {
-    let requests = records::list_recent_requests(&state.pool, 100)
-        .await?
-        .into_iter()
-        .map(RequestRecordView::from)
-        .collect();
-    render(RequestsTableTemplate { requests })
+pub async fn requests_partial(
+    State(state): State<AppState>,
+    Query(query): Query<RequestPageQuery>,
+) -> Result<Response, AppError> {
+    let page = build_requests_page(&state, query.page).await?;
+    render(RequestsTableTemplate {
+        requests: page.requests,
+        pagination: page.pagination,
+    })
+}
+
+struct RequestsPage {
+    requests: Vec<RequestRecordView>,
+    pagination: PaginationView,
+}
+
+async fn build_requests_page(
+    state: &AppState,
+    requested_page: Option<i64>,
+) -> Result<RequestsPage, AppError> {
+    let total_items = records::total_requests(&state.pool).await?;
+    let total_pages = if total_items == 0 {
+        1
+    } else {
+        (total_items + REQUESTS_PAGE_SIZE - 1) / REQUESTS_PAGE_SIZE
+    };
+    let page = requested_page.unwrap_or(1).clamp(1, total_pages.max(1));
+    let offset = (page - 1) * REQUESTS_PAGE_SIZE;
+    let requests: Vec<RequestRecordView> =
+        records::list_requests_page(&state.pool, REQUESTS_PAGE_SIZE, offset)
+            .await?
+            .into_iter()
+            .map(RequestRecordView::from)
+            .collect();
+    let start_item = if total_items == 0 { 0 } else { offset + 1 };
+    let end_item = if total_items == 0 {
+        0
+    } else {
+        (offset + requests.len() as i64).min(total_items)
+    };
+
+    Ok(RequestsPage {
+        requests,
+        pagination: PaginationView {
+            page,
+            total_pages,
+            total_items,
+            start_item,
+            end_item,
+            has_previous: page > 1,
+            has_next: page < total_pages,
+            previous_page: (page - 1).max(1),
+            next_page: (page + 1).min(total_pages),
+        },
+    })
 }
 
 async fn render_settings(
@@ -299,6 +374,7 @@ async fn render_settings(
     has_message: bool,
 ) -> Result<Response, AppError> {
     render(SettingsTemplate {
+        active_nav: ACTIVE_NAV_SETTINGS,
         settings,
         api_base_url: api_base_url(headers),
         message: message.to_string(),
@@ -318,6 +394,7 @@ async fn render_upstreams(
         .map(UpstreamView::from);
     let has_upstream = upstream.is_some();
     render(UpstreamsTemplate {
+        active_nav: ACTIVE_NAV_UPSTREAMS,
         upstream: upstream.unwrap_or_else(empty_upstream_view),
         has_upstream,
         message: message.to_string(),
