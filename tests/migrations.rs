@@ -55,6 +55,11 @@ async fn legacy_upstreams_migrate_to_one_enabled_base_url_without_keys() -> anyh
         include_str!("../migrations/0005_request_payloads.sql"),
     )
     .await?;
+    apply_sql(
+        &pool,
+        include_str!("../migrations/0006_rebalance_default_timeouts.sql"),
+    )
+    .await?;
 
     assert_eq!(table_exists(&pool, "proxy_keys").await?, 0);
     assert_eq!(table_exists(&pool, "request_payloads").await?, 1);
@@ -105,6 +110,11 @@ async fn legacy_disabled_only_upstreams_migrate_to_unconfigured_state() -> anyho
         include_str!("../migrations/0005_request_payloads.sql"),
     )
     .await?;
+    apply_sql(
+        &pool,
+        include_str!("../migrations/0006_rebalance_default_timeouts.sql"),
+    )
+    .await?;
 
     assert!(upstreams::list_runtime(&pool).await?.is_empty());
     assert_eq!(table_exists(&pool, "request_payloads").await?, 1);
@@ -135,6 +145,72 @@ async fn legacy_max_body_bytes_setting_is_removed() -> anyhow::Result<()> {
         .fetch_one(&pool)
         .await?;
     assert_eq!(row.0, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn legacy_default_timeout_settings_migrate_to_new_response_defaults() -> anyhow::Result<()> {
+    let pool = storage::connect("sqlite::memory:").await?;
+    apply_sql(&pool, include_str!("../migrations/0001_initial.sql")).await?;
+    sqlx::query(
+        r#"
+        INSERT INTO settings (key, value, updated_at)
+        VALUES
+            ('response_header_timeout_ms', '15000', '2026-01-01T00:00:00Z'),
+            ('first_token_timeout_ms', '20000', '2026-01-01T00:00:00Z'),
+            ('max_attempts', '3', '2026-01-01T00:00:00Z')
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+
+    apply_sql(
+        &pool,
+        include_str!("../migrations/0006_rebalance_default_timeouts.sql"),
+    )
+    .await?;
+
+    assert_eq!(
+        setting_value(&pool, "response_header_timeout_ms").await?,
+        "5000"
+    );
+    assert_eq!(
+        setting_value(&pool, "first_token_timeout_ms").await?,
+        "10000"
+    );
+    assert_eq!(setting_value(&pool, "max_attempts").await?, "3");
+    Ok(())
+}
+
+#[tokio::test]
+async fn custom_timeout_settings_are_not_overwritten_by_default_rebalance() -> anyhow::Result<()> {
+    let pool = storage::connect("sqlite::memory:").await?;
+    apply_sql(&pool, include_str!("../migrations/0001_initial.sql")).await?;
+    sqlx::query(
+        r#"
+        INSERT INTO settings (key, value, updated_at)
+        VALUES
+            ('response_header_timeout_ms', '7000', '2026-01-01T00:00:00Z'),
+            ('first_token_timeout_ms', '12000', '2026-01-01T00:00:00Z')
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+
+    apply_sql(
+        &pool,
+        include_str!("../migrations/0006_rebalance_default_timeouts.sql"),
+    )
+    .await?;
+
+    assert_eq!(
+        setting_value(&pool, "response_header_timeout_ms").await?,
+        "7000"
+    );
+    assert_eq!(
+        setting_value(&pool, "first_token_timeout_ms").await?,
+        "12000"
+    );
     Ok(())
 }
 
@@ -191,6 +267,14 @@ async fn table_columns(pool: &SqlitePool, table: &str) -> anyhow::Result<Vec<Str
         .into_iter()
         .map(|row| row.get::<String, _>("name"))
         .collect())
+}
+
+async fn setting_value(pool: &SqlitePool, key: &str) -> anyhow::Result<String> {
+    let row: (String,) = sqlx::query_as("SELECT value FROM settings WHERE key = ?1")
+        .bind(key)
+        .fetch_one(pool)
+        .await?;
+    Ok(row.0)
 }
 
 fn test_config() -> AppConfig {

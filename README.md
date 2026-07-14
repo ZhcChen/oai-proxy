@@ -46,6 +46,8 @@ cargo run
 
 - 监听地址：`127.0.0.1:57999`
 - 数据库：`data/oai-proxy.sqlite3`
+- 响应头超时：`5000 ms`
+- 首 token 超时：`10000 ms`
 
 直接启动后在上游页面配置服务提供方 Base URL。客户端 Base URL 会根据当前访问
 域名自动展示，不需要手工设置。请求中的 `Authorization`、自定义 header、query
