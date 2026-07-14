@@ -156,7 +156,7 @@ async fn forwards_non_post_method_instead_of_returning_405() -> anyhow::Result<(
         .oneshot(
             Request::builder()
                 .method("PATCH")
-                .uri("/admin?trace=method")
+                .uri("/responses?trace=method")
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"op":"transparent"}"#))?,
         )
@@ -169,7 +169,7 @@ async fn forwards_non_post_method_instead_of_returning_405() -> anyhow::Result<(
         .pop()
         .expect("upstream captured request");
     assert_eq!(captured.method, "PATCH");
-    assert_eq!(captured.path_and_query, "/admin?trace=method");
+    assert_eq!(captured.path_and_query, "/responses?trace=method");
     assert_eq!(captured.body, r#"{"op":"transparent"}"#);
     Ok(())
 }

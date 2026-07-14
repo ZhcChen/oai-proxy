@@ -30,11 +30,13 @@ pub async fn proxy_openai(
     headers: HeaderMap,
     body: Body,
 ) -> Result<Response<Body>, AppError> {
+    if is_control_plane_path(uri.path()) {
+        return Ok(not_found());
+    }
+
     let runtime = state.runtime.snapshot();
     let upstreams = runtime.configured_upstreams();
     let runtime_settings = runtime.settings;
-    let request_record_enabled =
-        runtime_settings.request_record_enabled && !is_control_plane_path(uri.path());
     let request_id = Uuid::new_v4().to_string();
     let endpoint = uri
         .path_and_query()
@@ -42,7 +44,7 @@ pub async fn proxy_openai(
         .unwrap_or_else(|| uri.path().to_string());
 
     if !runtime_settings.policy_enabled {
-        let records_enabled = if request_record_enabled {
+        let records_enabled = if runtime_settings.request_record_enabled {
             state.record_writer.create_request(NewRequestRecord {
                 id: request_id.clone(),
                 method: method.to_string(),
@@ -95,7 +97,7 @@ pub async fn proxy_openai(
     }
 
     if upstreams.is_empty() {
-        let records_enabled = if request_record_enabled {
+        let records_enabled = if runtime_settings.request_record_enabled {
             state.record_writer.create_request(NewRequestRecord {
                 id: request_id.clone(),
                 method: method.to_string(),
@@ -136,7 +138,7 @@ pub async fn proxy_openai(
     };
     let model = body::extract_model(&request_body);
 
-    let records_enabled = if request_record_enabled {
+    let records_enabled = if runtime_settings.request_record_enabled {
         state.record_writer.create_request(NewRequestRecord {
             id: request_id.clone(),
             method: method.to_string(),
@@ -431,4 +433,11 @@ fn openai_error(status: StatusCode, body: Vec<u8>) -> Response<Body> {
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(body))
         .expect("response builder should accept JSON error body")
+}
+
+fn not_found() -> Response<Body> {
+    Response::builder()
+        .status(StatusCode::NOT_FOUND)
+        .body(Body::empty())
+        .expect("response builder should accept empty body")
 }
