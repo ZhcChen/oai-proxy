@@ -35,7 +35,7 @@ async fn test_router() -> anyhow::Result<axum::Router> {
     let pool = storage::connect(&config.database_url).await?;
     storage::migrate(&pool).await?;
     storage::settings::ensure_defaults(&pool, &config).await?;
-    let state = app::AppState::new(config, pool)?;
+    let state = app::AppState::new(config, pool).await?;
     Ok(app::router(state))
 }
 
@@ -44,7 +44,6 @@ fn test_config() -> AppConfig {
         bind_host: "127.0.0.1".to_string(),
         database_url: "sqlite::memory:".to_string(),
         data_dir: PathBuf::from("data"),
-        default_max_body_bytes: 1024 * 1024,
         default_response_header_timeout_ms: 1000,
         default_first_token_timeout_ms: 1000,
         default_max_attempts: 2,

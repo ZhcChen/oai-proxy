@@ -43,9 +43,29 @@ pub struct RequestRecord {
     pub final_http_status: Option<i64>,
     pub error_message: Option<String>,
     pub retry_count: i64,
+    pub response_header_ms: Option<i64>,
+    pub first_token_ms: Option<i64>,
+    pub request_body_bytes: Option<i64>,
+    pub request_body_complete: Option<i64>,
+    pub response_body_bytes: Option<i64>,
+    pub response_body_complete: Option<i64>,
     pub created_at: String,
     pub completed_at: Option<String>,
     pub duration_ms: Option<i64>,
+}
+
+#[derive(Clone, Debug, FromRow, Serialize)]
+pub struct RequestPayload {
+    pub request_id: String,
+    pub request_body: Vec<u8>,
+    pub request_body_bytes: i64,
+    pub request_body_complete: i64,
+    pub request_body_error: Option<String>,
+    pub response_body: Vec<u8>,
+    pub response_body_bytes: i64,
+    pub response_body_complete: i64,
+    pub response_body_error: Option<String>,
+    pub updated_at: String,
 }
 
 #[derive(Clone, Debug, FromRow, Serialize)]
@@ -187,15 +207,265 @@ pub async fn finish_attempt(
     Ok(())
 }
 
+pub async fn save_request_body(
+    pool: &SqlitePool,
+    request_id: &str,
+    body: &[u8],
+) -> Result<(), sqlx::Error> {
+    let updated_at = now();
+    sqlx::query(
+        r#"
+        INSERT INTO request_payloads (
+            request_id,
+            request_body,
+            request_body_bytes,
+            request_body_complete,
+            response_body,
+            response_body_bytes,
+            response_body_complete,
+            updated_at
+        )
+        VALUES (?1, ?2, ?3, 1, X'', 0, 0, ?4)
+        ON CONFLICT(request_id) DO UPDATE SET
+            request_body = excluded.request_body,
+            request_body_bytes = excluded.request_body_bytes,
+            request_body_complete = 1,
+            request_body_error = NULL,
+            updated_at = excluded.updated_at
+        "#,
+    )
+    .bind(request_id)
+    .bind(body)
+    .bind(body.len().min(i64::MAX as usize) as i64)
+    .bind(updated_at)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn append_request_body(
+    pool: &SqlitePool,
+    request_id: &str,
+    chunk: &[u8],
+) -> Result<(), sqlx::Error> {
+    ensure_payload_row(pool, request_id).await?;
+    let updated_at = now();
+    sqlx::query(
+        r#"
+        UPDATE request_payloads
+        SET request_body = request_body || ?2,
+            request_body_bytes = request_body_bytes + ?3,
+            updated_at = ?4
+        WHERE request_id = ?1
+        "#,
+    )
+    .bind(request_id)
+    .bind(chunk)
+    .bind(chunk.len().min(i64::MAX as usize) as i64)
+    .bind(updated_at)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn finish_request_body(
+    pool: &SqlitePool,
+    request_id: &str,
+    complete: bool,
+    error_message: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    ensure_payload_row(pool, request_id).await?;
+    let updated_at = now();
+    sqlx::query(
+        r#"
+        UPDATE request_payloads
+        SET request_body_complete = ?2,
+            request_body_error = ?3,
+            updated_at = ?4
+        WHERE request_id = ?1
+        "#,
+    )
+    .bind(request_id)
+    .bind(if complete { 1 } else { 0 })
+    .bind(error_message)
+    .bind(updated_at)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn save_response_body(
+    pool: &SqlitePool,
+    request_id: &str,
+    body: &[u8],
+) -> Result<(), sqlx::Error> {
+    let updated_at = now();
+    sqlx::query(
+        r#"
+        INSERT INTO request_payloads (
+            request_id,
+            request_body,
+            request_body_bytes,
+            request_body_complete,
+            response_body,
+            response_body_bytes,
+            response_body_complete,
+            updated_at
+        )
+        VALUES (?1, X'', 0, 0, ?2, ?3, 1, ?4)
+        ON CONFLICT(request_id) DO UPDATE SET
+            response_body = excluded.response_body,
+            response_body_bytes = excluded.response_body_bytes,
+            response_body_complete = 1,
+            response_body_error = NULL,
+            updated_at = excluded.updated_at
+        "#,
+    )
+    .bind(request_id)
+    .bind(body)
+    .bind(body.len().min(i64::MAX as usize) as i64)
+    .bind(updated_at)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn append_response_body(
+    pool: &SqlitePool,
+    request_id: &str,
+    chunk: &[u8],
+) -> Result<(), sqlx::Error> {
+    ensure_payload_row(pool, request_id).await?;
+    let updated_at = now();
+    sqlx::query(
+        r#"
+        UPDATE request_payloads
+        SET response_body = response_body || ?2,
+            response_body_bytes = response_body_bytes + ?3,
+            updated_at = ?4
+        WHERE request_id = ?1
+        "#,
+    )
+    .bind(request_id)
+    .bind(chunk)
+    .bind(chunk.len().min(i64::MAX as usize) as i64)
+    .bind(updated_at)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn finish_response_body(
+    pool: &SqlitePool,
+    request_id: &str,
+    complete: bool,
+    error_message: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    ensure_payload_row(pool, request_id).await?;
+    let updated_at = now();
+    sqlx::query(
+        r#"
+        UPDATE request_payloads
+        SET response_body_complete = ?2,
+            response_body_error = ?3,
+            updated_at = ?4
+        WHERE request_id = ?1
+        "#,
+    )
+    .bind(request_id)
+    .bind(if complete { 1 } else { 0 })
+    .bind(error_message)
+    .bind(updated_at)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn get_payload(
+    pool: &SqlitePool,
+    request_id: &str,
+) -> Result<Option<RequestPayload>, sqlx::Error> {
+    sqlx::query_as::<_, RequestPayload>(
+        r#"
+        SELECT request_id, request_body, request_body_bytes, request_body_complete,
+               request_body_error, response_body, response_body_bytes,
+               response_body_complete, response_body_error, updated_at
+        FROM request_payloads
+        WHERE request_id = ?1
+        "#,
+    )
+    .bind(request_id)
+    .fetch_optional(pool)
+    .await
+}
+
+async fn ensure_payload_row(pool: &SqlitePool, request_id: &str) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        INSERT INTO request_payloads (
+            request_id,
+            request_body,
+            request_body_bytes,
+            request_body_complete,
+            response_body,
+            response_body_bytes,
+            response_body_complete,
+            updated_at
+        )
+        VALUES (?1, X'', 0, 0, X'', 0, 0, ?2)
+        ON CONFLICT(request_id) DO NOTHING
+        "#,
+    )
+    .bind(request_id)
+    .bind(now())
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 pub async fn list_recent_requests(
     pool: &SqlitePool,
     limit: i64,
 ) -> Result<Vec<RequestRecord>, sqlx::Error> {
     sqlx::query_as::<_, RequestRecord>(
         r#"
-        SELECT id, method, endpoint, model, status, upstream_name, attempt_count,
-               final_http_status, error_message, retry_count, created_at, completed_at, duration_ms
+        SELECT
+            request_records.id,
+            method,
+            endpoint,
+            model,
+            request_records.status,
+            upstream_name,
+            attempt_count,
+            final_http_status,
+            request_records.error_message,
+            retry_count,
+            (
+                SELECT response_header_ms
+                FROM attempt_records
+                WHERE request_id = request_records.id
+                  AND response_header_ms IS NOT NULL
+                ORDER BY attempt_index DESC
+                LIMIT 1
+            ) AS response_header_ms,
+            (
+                SELECT first_token_ms
+                FROM attempt_records
+                WHERE request_id = request_records.id
+                  AND first_token_ms IS NOT NULL
+                ORDER BY attempt_index DESC
+                LIMIT 1
+            ) AS first_token_ms,
+            request_payloads.request_body_bytes,
+            request_payloads.request_body_complete,
+            request_payloads.response_body_bytes,
+            request_payloads.response_body_complete,
+            request_records.created_at,
+            completed_at,
+            request_records.duration_ms
         FROM request_records
+        LEFT JOIN request_payloads
+          ON request_payloads.request_id = request_records.id
         ORDER BY created_at DESC
         LIMIT ?1
         "#,

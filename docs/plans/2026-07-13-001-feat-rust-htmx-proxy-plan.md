@@ -13,7 +13,7 @@ origin: docs/brainstorms/first-token-failover-proxy-requirements.md
 本计划定义 `oai-proxy` 的第一阶段技术架构：使用 Rust 构建一个固定端口
 `57999` 的轻量 AI HTTP 代理。该服务在同一个端口上同时提供：
 
-- 管理页面：配置上游、超时、重试策略、代理 key、请求记录。
+- 管理页面：配置单个上游 Base URL、超时、重试策略、请求记录。
 - 转发 API：OpenAI-compatible HTTP/SSE 入口。
 - 运维端点：健康检查、基础指标或状态查询。
 
@@ -49,10 +49,10 @@ origin: docs/brainstorms/first-token-failover-proxy-requirements.md
 - R7. 超时后取消当前 attempt、释放资源、发起下一次 attempt。
 - R8. 未写出语义响应前允许重试；一旦输出首 token，不再无感切换。
 - R9. 支持最大 attempt 配置，耗尽后返回 OpenAI-compatible 504。
-- R10. MVP 先支持全局 + 单渠道配置，保留模型级覆盖扩展点。
+- R10. MVP 先支持全局策略 + 单个上游 Base URL 配置，保留模型级覆盖扩展点。
 - R11-R13. 重试成功时客户端只看到最终成功 attempt 的响应。
 - R14-R16. 记录 request 和 attempt，不做用户计费，不承诺上游取消后不扣费。
-- R17-R20. 请求体可重放、客户端断开即取消、attempt 独立清理，默认串行重试。
+- R17-R20. 策略层请求体可重放、客户端断开即取消、attempt 独立清理，默认串行重试。
 - R21-R23. 提供结构化日志、请求记录、基础指标，并可关闭自动重试。
 
 ## Scope Boundaries
@@ -125,12 +125,12 @@ origin: docs/brainstorms/first-token-failover-proxy-requirements.md
   - 开启 WAL，配置请求记录 retention，避免长期无限增长。
   - 后续如果需要多实例部署，再抽象 repository 层迁移 PostgreSQL。
 
-- **配置以 SQLite 为运行时真源，环境变量只做启动和敏感引导。**
+- **配置以 SQLite 为运行时真源，环境变量只做启动引导。**
   - 固定端口 `57999` 不做端口配置。
   - `OAI_PROXY_BIND` 可选控制绑定地址，默认 `127.0.0.1`。
   - 后台页面不做登录授权；公网部署建议用反向代理限制 `/admin/*`。
   - 客户端 Base URL 根据访问域名自动展示，不作为配置项保存。
-  - 代理入口 API Key 在配置页生成，存储为摘要；上游 API key 存 SQLite，但 UI 和日志必须脱敏。
+  - 代理入口不做 API Key 校验；上游只配置一个全局 Base URL，客户端 Authorization/API Key 原样转发。
 
 - **API 和后台共端口，路径隔离。**
   - `/admin/*`：管理页面和 htmx partial。
@@ -187,7 +187,6 @@ origin: docs/brainstorms/first-token-failover-proxy-requirements.md
 ├──────────────────────────────┤
 │ SQLite                        │
 │  settings / upstreams         │
-│  proxy keys                   │
 │  request records              │
 │  attempt records              │
 └──────────────────────────────┘
@@ -254,7 +253,7 @@ attempt loop
 
 - [x] **Unit 2: SQLite 数据模型与配置存储**
 
-**Goal:** 持久化上游配置、代理 key、全局超时设置、请求记录和 attempt 记录。
+**Goal:** 持久化单上游 Base URL、全局超时设置、请求记录和 attempt 记录。
 
 **Requirements:** R2, R10, R14, R17, R21
 
@@ -274,10 +273,9 @@ attempt loop
 - 表建议包含：
   - `settings`
   - `upstreams`
-  - `proxy_keys`
   - `request_records`
   - `attempt_records`
-- API key 和敏感字段读取后只在必要路径使用；日志和 UI 脱敏。
+- 代理入口不存储 API Key；客户端 Authorization/API Key 只作为请求 header 透传。
 - 请求记录默认只保存 metadata，不保存完整 prompt/body。
 
 **Patterns to follow:**
@@ -287,8 +285,8 @@ attempt loop
 - Happy path: 创建 upstream 后可读取并用于配置页面。
 - Happy path: 写入 request record 和多个 attempt records 后可按时间倒序查询。
 - Edge case: 空配置库启动时插入默认 settings。
-- Error path: 重复 upstream name 返回可展示错误。
-- Error path: 敏感字段查询给 UI 时被脱敏。
+- Happy path: 重复保存上游 Base URL 会覆盖同一条全局上游配置。
+- Error path: 无效 Base URL 返回可展示错误。
 
 **Verification:**
 - 配置和请求记录重启后不丢失。
@@ -325,7 +323,7 @@ attempt loop
   `static/vendor/`；模板只引用本地路径。
 - HeroUI React 组件不进入运行时，避免破坏 HTML + htmx 的服务端渲染架构。
 - 管理页面不提供登录页，不使用后台授权 token。
-- 配置页展示按当前域名推导的客户端 Base URL，并生成代理入口 API Key。
+- 配置页展示按当前域名推导的客户端 Base URL；上游页只配置单个 Base URL。
 - `/admin/requests` 支持按状态、模型、上游、时间窗口过滤。
 
 **Patterns to follow:**
@@ -336,14 +334,14 @@ attempt loop
 **Test scenarios:**
 - Happy path: 无登录访问 `/admin` 返回 dashboard HTML。
 - Happy path: 配置页按当前 Host 展示客户端 Base URL。
-- Happy path: 配置页生成代理入口 API Key。
+- Happy path: 上游页保存单个 Base URL 后刷新运行时缓存。
 - Happy path: 修改 first token timeout 后，页面 partial 显示更新后的值。
 - Happy path: 请求记录列表 htmx endpoint 返回表格 fragment。
 - Error path: 无效配置值返回表单级错误，不写入数据库。
 
 **Verification:**
 - 不写自定义前端框架也能完成配置和查看记录。
-- 页面所有持久化敏感 token 均脱敏显示；新生成的代理 API Key 只在生成响应中一次性明文展示。
+- 页面不生成、不保存代理侧密钥；客户端鉴权头由请求原样透传到上游。
 
 - [x] **Unit 4: HTTP 代理入口与上游转发**
 
@@ -363,8 +361,8 @@ attempt loop
 
 **Approach:**
 - 暴露 `/v1/chat/completions` 和 `/v1/responses`。
-- 请求体先按大小限制读取为 bytes，供 attempt 重放。
-- 使用 reqwest 构造上游请求，透传安全请求头，重写 Authorization 到目标上游 key。
+- 策略层请求体读取为 bytes，供 attempt 重放；请求体大小不再作为策略项限制。
+- 使用 reqwest 构造上游请求，透传请求头、query 和 body，仅过滤协议级 hop-by-hop header。
 - 响应头按 allowlist 透传，避免 hop-by-hop headers 泄漏。
 - 客户端断开时取消当前 attempt。
 
@@ -375,7 +373,7 @@ attempt loop
 **Test scenarios:**
 - Happy path: POST `/v1/chat/completions` 被转发到配置的 mock upstream。
 - Happy path: query string 和必要 headers 被转发。
-- Edge case: 请求体超过限制返回 413。
+- Edge case: 无上游配置时返回 OpenAI-compatible 503。
 - Error path: 无可用 upstream 返回 OpenAI-compatible 503。
 - Error path: 上游连接失败返回可记录的 502/504，并写 attempt record。
 - Integration: 一次代理请求产生一个 request record 和至少一个 attempt record。
@@ -408,7 +406,7 @@ attempt loop
   - drop 当前 response body；
   - cancel attempt context；
   - 记录 attempt timeout；
-  - 选择下一上游或同上游下一 attempt。
+  - 对已配置的单个上游发起下一次 attempt。
 - 首个语义输出到达时：
   - 提交 downstream response header；
   - flush 当前成功 attempt 的前置帧和首个语义帧；
@@ -481,7 +479,7 @@ AttemptStarted
 - Error path: 指标写入失败不影响代理请求主路径。
 
 **Verification:**
-- 管理页面能快速看出哪个上游经常首 token 超时。
+- 管理页面能快速看出当前上游是否经常首 token 超时。
 - 关闭自动重试后，首 token 超时不再发起新 attempt。
 
 ### Implementation Completion Notes
@@ -489,14 +487,33 @@ AttemptStarted
 本轮实现按第一阶段 MVP 收敛完成，和计划初稿相比有以下落地调整：
 
 - 默认绑定地址为 `127.0.0.1`；后台页面不提供登录页，不使用后台授权 token。
-- 配置页根据当前访问域名自动展示客户端 Base URL，并生成代理入口 API Key。
-- 代理转发显式跳过 `Cookie`，避免浏览器或反向代理 Cookie 进入上游。
-- `proxy_keys` 在 SQLite 中存储 SHA-256 摘要；上游 API key 仍需可逆使用，当前以本地
-  SQLite 明文保存，依赖文件权限保护，后续可增强为系统密钥链或本机加密。
+- 配置页根据当前访问域名自动展示客户端 Base URL；不再生成代理入口密钥。
+- 代理转发不再改写 `Authorization`，`Cookie`/`Set-Cookie` 也按普通端到端 header 透传。
+- SQLite 不再保留旧入口密钥表；上游也不再单独存储密钥。
 - SSE 首 token 提交后，request/attempt 记录延迟到流结束、流错误或客户端断开时更新，
   避免首 token 后断流被误记为完整成功。
 - `/metrics` 第一阶段采用 JSON 计数，不引入 Prometheus 依赖；TTFT 直方图和记录
   retention 清理作为后续运维增强。
+
+### Follow-up Adjustment: 双层代理与运行时缓存
+
+用户在 MVP 后补充了新的运行边界，本计划按以下方向继续演进：
+
+- 新增全局 `policy_enabled`：
+  - 关闭时走策略旁路的直接转发层，只做单次上游转发，不读取完整请求体做重放，不做
+    响应头/首 token 策略判断；仅过滤协议级 hop-by-hop header。若请求记录开关开启，
+    仍记录 request/attempt metadata、完整请求/响应正文与响应头、首 token、完整响应耗时。
+  - 开启时走策略层，保留当前响应头超时、首 token 超时、串行重试和后续过滤逻辑。
+- 新增 `request_record_enabled`，对直接转发层和策略层均生效：
+  - 开启时继续把 request/attempt metadata、完整请求/响应正文、响应头耗时、首 token 耗时、完整响应耗时写入 SQLite。
+  - 关闭时不写请求记录；stdout/stderr 不作为业务请求记录存储。
+- 配置真源仍是 SQLite，代理请求主路径读取启动时加载的内存快照；管理页面保存配置
+  或保存上游 Base URL 后同步刷新内存快照。
+- 上游配置收敛为单个全局 Base URL，不提供逐项启用/停用操作。
+- 请求记录页面继续读取 SQLite。代理热路径只向 bounded channel 投递记录事件，后台
+  writer 异步落库；队列满或写入失败只记录 warn，不影响转发主路径。
+- 完整请求/响应正文按 chunk 追加到 `request_payloads`，并记录完整性标记；当前不做
+  正文截断，后续需要 retention/清理策略控制 SQLite 体积。
 
 ## System-Wide Impact
 
@@ -524,19 +541,19 @@ AttemptStarted
 - **缓存首 token 前帧导致内存膨胀。**
   - Mitigation: 对 prefix buffer 设置大小上限；超过上限视为 attempt 失败或直接提交当前流。
 
-- **后台配置暴露上游 key。**
-  - Mitigation: 所有 token 脱敏；日志不打印 secrets；公网部署应由反向代理保护 `/admin/*`。
+- **后台配置暴露敏感信息。**
+  - Mitigation: 后台不保存代理侧或上游侧密钥；公网部署应由反向代理保护 `/admin/*`。
 
 - **SQLite 写入影响代理延迟。**
-  - Mitigation: 主路径只写必要记录；可用 bounded channel 异步写 attempt record，
+  - Mitigation: request/attempt 记录通过 bounded channel 投递到后台 writer 异步落库，
     失败时不阻塞转发主路径。
 
 ## Documentation / Operational Notes
 
 - `README.md` 需要说明：
   - 固定端口 `57999`；
-  - 后台无登录、客户端 Base URL 自动推导、API Key 在页面生成；
-  - 上游服务配置；
+  - 后台无登录、客户端 Base URL 自动推导；
+  - 单个上游 Base URL 配置；
   - HeroUI/htmx 静态资产来自本地 `static/vendor/`，不依赖 CDN；
   - response header timeout 与 first token timeout 区别；
   - WS 暂不支持。

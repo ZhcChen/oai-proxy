@@ -4,4 +4,6 @@ pub mod config;
 pub mod error;
 pub mod observability;
 pub mod proxy;
+pub mod recording;
+pub mod runtime;
 pub mod storage;

@@ -12,9 +12,8 @@ async fn main() -> anyhow::Result<()> {
     storage::migrate(&pool).await?;
     storage::settings::ensure_defaults(&pool, &config).await?;
     storage::upstreams::seed_from_env(&pool).await?;
-    storage::proxy_keys::seed_from_env(&pool).await?;
 
-    let state = app::AppState::new(config.clone(), pool)?;
+    let state = app::AppState::new(config.clone(), pool).await?;
     let router = app::router(state);
     let listener = TcpListener::bind(config.listen_addr()).await?;
 

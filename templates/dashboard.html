@@ -4,46 +4,68 @@
 
 {% block content %}
 <section class="hero">
-  <div>
+  <div class="hero-copy">
+    <span class="eyebrow">本机端口 :57999</span>
     <h1>首 token failover 代理</h1>
-    <p>HTTP/SSE 代理入口固定为 <code>:57999</code>，当前第一阶段暂不支持 WebSocket。</p>
+    <p>面向 AI HTTP/SSE 请求的轻量网关。首 token 超时后可无感丢弃慢请求，并按策略重新发起 attempt。</p>
+    <div class="hero-badges">
+      <span class="pill">HTTP/SSE</span>
+      <span class="pill">SQLite 记录</span>
+      <span class="pill">{% if settings.policy_enabled %}策略层启用{% else %}纯代理转发{% endif %}</span>
+    </div>
   </div>
   <a class="button" href="/admin/settings">调整配置</a>
 </section>
 
-<section class="grid">
-  <article class="card">
-    <span class="metric-label">启用上游</span>
+<section class="metric-grid">
+  <article class="card metric-card accent-indigo">
+    <span class="metric-label">上游配置</span>
     <strong class="metric">{{ upstream_count }}</strong>
+    <span class="metric-note">0 或 1 个 Base URL</span>
   </article>
-  <article class="card">
+  <article class="card metric-card accent-slate">
     <span class="metric-label">总请求</span>
     <strong class="metric">{{ total_requests }}</strong>
+    <span class="metric-note">已入库请求记录</span>
   </article>
-  <article class="card">
+  <article class="card metric-card accent-green">
     <span class="metric-label">成功请求</span>
     <strong class="metric">{{ success_requests }}</strong>
+    <span class="metric-note">success / retried_success</span>
   </article>
-  <article class="card">
+  <article class="card metric-card accent-red">
     <span class="metric-label">超时耗尽</span>
     <strong class="metric">{{ timeout_requests }}</strong>
+    <span class="metric-note">所有 attempt 均失败</span>
   </article>
 </section>
 
 <section class="card">
-  <h2>当前全局策略</h2>
+  <div class="card-header">
+    <div>
+      <span class="eyebrow">Runtime cache</span>
+      <h2>当前全局策略</h2>
+    </div>
+    <span class="pill {% if settings.auto_retry_enabled %}pill-success{% else %}pill-muted{% endif %}">
+      {% if settings.auto_retry_enabled %}自动重试开启{% else %}自动重试关闭{% endif %}
+    </span>
+  </div>
   <dl class="settings-list">
     <div><dt>等待响应头超时</dt><dd>{{ settings.response_header_timeout_ms }} ms</dd></div>
     <div><dt>首 token 超时</dt><dd>{{ settings.first_token_timeout_ms }} ms</dd></div>
     <div><dt>最大 attempt</dt><dd>{{ settings.max_attempts }}</dd></div>
-    <div><dt>请求体上限</dt><dd>{{ settings.max_body_bytes }} bytes</dd></div>
+    <div><dt>全局策略层</dt><dd>{% if settings.policy_enabled %}启用{% else %}关闭，当前为纯代理转发{% endif %}</dd></div>
     <div><dt>自动重试</dt><dd>{% if settings.auto_retry_enabled %}启用{% else %}关闭{% endif %}</dd></div>
+    <div><dt>请求记录</dt><dd>{% if settings.request_record_enabled %}写入 SQLite{% else %}关闭{% endif %}</dd></div>
   </dl>
 </section>
 
 <section class="card">
-  <div class="section-title">
-    <h2>最近请求</h2>
+  <div class="card-header">
+    <div>
+      <span class="eyebrow">Recent traffic</span>
+      <h2>最近请求</h2>
+    </div>
     <a href="/admin/requests">查看全部</a>
   </div>
   {% include "partials/requests_table.html" %}

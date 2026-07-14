@@ -42,7 +42,7 @@ topic: first-token-failover-proxy
 代理读取并缓存请求体
   │
   ▼
-选择上游 / 渠道 / endpoint
+读取已配置的单个上游 Base URL / endpoint
   │
   ▼
 发起第 N 次上游请求
@@ -63,7 +63,8 @@ topic: first-token-failover-proxy
 - R1. 代理服务应优先支持 OpenAI-compatible HTTP/SSE 入口，包括
   `/v1/chat/completions` 与 `/v1/responses`。
 - R2. 代理应透传请求方法、路径、query、请求体与必要请求头，并允许配置
-  上游 base URL、API Key、默认模型映射和超时策略。
+  单个上游 base URL 和超时策略；客户端请求中的 Authorization/API Key 原样转发，
+  不在代理入口做 API Key 校验。
 - R3. 代理应支持流式响应；非流式响应可以复用响应头超时和总请求超时，
   但首 token 超时主要面向 SSE 流。
 
@@ -82,8 +83,8 @@ topic: first-token-failover-proxy
   客户端输出 token，就不能把两个不同上游请求的流拼接到同一个下游响应里。
 - R9. 应提供最大 attempt 次数、最大重试次数或最大切换次数配置。全部耗尽后，
   代理返回 OpenAI-compatible 错误，推荐 HTTP 504。
-- R10. 应支持按全局、渠道、模型或 endpoint 覆盖超时与重试策略；MVP 可以先做
-  全局 + 单渠道配置。
+- R10. MVP 先做全局策略配置和单个上游 Base URL；模型级、endpoint 级覆写可作为
+  后续增强。
 
 **客户端无感行为**
 
@@ -105,8 +106,8 @@ topic: first-token-failover-proxy
 
 **稳定性与资源控制**
 
-- R17. 请求体应在代理层读取并缓存一次，供多次 attempt 重放；同时必须有最大
-  请求体大小限制。
+- R17. 策略层请求体应在代理层读取并缓存一次，供多次 attempt 重放；不再提供
+  请求体大小限制策略。
 - R18. 客户端断开连接时，代理应取消当前上游请求，并停止后续重试。
 - R19. 每次 attempt 应有独立 context、独立上游连接和明确清理逻辑，避免连接、
   goroutine 或响应体泄漏。
@@ -163,7 +164,20 @@ topic: first-token-failover-proxy
 - 重试必须在下游响应提交前完成；首个语义输出一旦写给客户端，本次请求就固定在
   当前上游 attempt 上。
 - MVP 采用串行重试，避免并发抢跑带来的成本和副作用。
-- 配置先覆盖全局和单渠道；模型级、endpoint 级覆写作为自然扩展点保留。
+- 配置先覆盖全局策略和单个上游 Base URL；模型级、endpoint 级覆写作为自然扩展点保留。
+- 代理拆成两层运行路径：
+  - 策略旁路的直接转发层：全局策略关闭时使用，只选择已配置的单个上游并直接流式转发，
+    不做首 token 判断、自动重试或请求体缓存重放；仅过滤协议级 hop-by-hop header。
+    若请求记录开关开启，仍异步记录 request/attempt metadata、完整请求/响应正文、
+    响应头耗时、首 token 耗时和完整响应耗时。
+  - 策略层：全局策略开启时使用，执行响应头超时、首 token 超时、串行重试和后续过滤逻辑。
+- 所有运行配置保存到 SQLite，服务启动时加载到内存缓存；管理页面修改配置或保存
+  上游 Base URL 后刷新内存缓存。
+- 请求记录以 SQLite 为主存储，stdout/stderr 只保留普通运行日志；新增记录开关控制
+  是否写入 request/attempt records 和 request/response payloads。payload 按 chunk
+  追加落库并记录完整性标记，不做截断；写入通过 bounded channel + 后台 writer
+  异步完成，队列满或写入失败不阻塞代理转发。
+- 上游配置收敛为单个全局 Base URL，不再提供代理侧密钥、上游侧密钥或逐项启停。
 
 ## Dependencies / Assumptions
 

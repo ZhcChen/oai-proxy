@@ -12,7 +12,13 @@
         <th>Attempts</th>
         <th>Retries</th>
         <th>HTTP</th>
-        <th>耗时 ms</th>
+        <th>响应头 ms</th>
+        <th>首 token ms</th>
+        <th>完整响应 ms</th>
+        <th>请求 bytes</th>
+        <th>请求完整</th>
+        <th>响应 bytes</th>
+        <th>响应完整</th>
         <th>错误</th>
       </tr>
     </thead>
@@ -21,7 +27,7 @@
       <tr>
         <td><code>{{ request.created_at }}</code></td>
         <td><code>{{ request.id }}</code></td>
-        <td><span class="status">{{ request.status }}</span></td>
+        <td><span class="status status-{{ request.status }}">{{ request.status }}</span></td>
         <td>{{ request.method }}</td>
         <td><code>{{ request.endpoint }}</code></td>
         <td>{{ request.model }}</td>
@@ -29,7 +35,13 @@
         <td>{{ request.attempt_count }}</td>
         <td>{{ request.retry_count }}</td>
         <td>{{ request.final_http_status }}</td>
+        <td>{{ request.response_header_ms }}</td>
+        <td>{{ request.first_token_ms }}</td>
         <td>{{ request.duration_ms }}</td>
+        <td>{{ request.request_body_bytes }}</td>
+        <td>{{ request.request_body_complete }}</td>
+        <td>{{ request.response_body_bytes }}</td>
+        <td>{{ request.response_body_complete }}</td>
         <td>{{ request.error_message }}</td>
       </tr>
       {% endfor %}

@@ -12,19 +12,3 @@ pub fn build_url(upstream: &Upstream, uri: &Uri) -> Result<Url, AppError> {
     Url::parse(&format!("{base}{path_and_query}"))
         .map_err(|error| AppError::BadRequest(format!("invalid upstream url: {error}")))
 }
-
-pub fn header_timeout_ms(upstream: &Upstream, global: i64) -> i64 {
-    upstream.response_header_timeout_ms.unwrap_or(global).max(1)
-}
-
-pub fn first_token_timeout_ms(upstream: &Upstream, global: i64) -> i64 {
-    upstream.first_token_timeout_ms.unwrap_or(global).max(1)
-}
-
-pub fn max_attempts(upstream: &Upstream, global: usize) -> usize {
-    upstream
-        .max_attempts
-        .map(|value| value.max(1) as usize)
-        .unwrap_or(global)
-        .max(1)
-}

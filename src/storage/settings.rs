@@ -7,15 +7,17 @@ use crate::config::AppConfig;
 
 use super::now;
 
-pub const KEY_MAX_BODY_BYTES: &str = "max_body_bytes";
 pub const KEY_RESPONSE_HEADER_TIMEOUT_MS: &str = "response_header_timeout_ms";
 pub const KEY_FIRST_TOKEN_TIMEOUT_MS: &str = "first_token_timeout_ms";
 pub const KEY_MAX_ATTEMPTS: &str = "max_attempts";
 pub const KEY_AUTO_RETRY_ENABLED: &str = "auto_retry_enabled";
+pub const KEY_POLICY_ENABLED: &str = "policy_enabled";
+pub const KEY_REQUEST_RECORD_ENABLED: &str = "request_record_enabled";
 
 #[derive(Clone, Debug, Serialize)]
 pub struct RuntimeSettings {
-    pub max_body_bytes: i64,
+    pub policy_enabled: bool,
+    pub request_record_enabled: bool,
     pub response_header_timeout_ms: i64,
     pub first_token_timeout_ms: i64,
     pub max_attempts: i64,
@@ -25,7 +27,8 @@ pub struct RuntimeSettings {
 impl RuntimeSettings {
     pub fn from_config(config: &AppConfig) -> Self {
         Self {
-            max_body_bytes: config.default_max_body_bytes,
+            policy_enabled: false,
+            request_record_enabled: true,
             response_header_timeout_ms: config.default_response_header_timeout_ms,
             first_token_timeout_ms: config.default_first_token_timeout_ms,
             max_attempts: config.default_max_attempts,
@@ -46,7 +49,6 @@ pub async fn ensure_defaults(pool: &SqlitePool, config: &AppConfig) -> Result<()
     let defaults = RuntimeSettings::from_config(config);
     let mut tx = pool.begin().await?;
     for (key, value) in [
-        (KEY_MAX_BODY_BYTES, defaults.max_body_bytes.to_string()),
         (
             KEY_RESPONSE_HEADER_TIMEOUT_MS,
             defaults.response_header_timeout_ms.to_string(),
@@ -59,6 +61,11 @@ pub async fn ensure_defaults(pool: &SqlitePool, config: &AppConfig) -> Result<()
         (
             KEY_AUTO_RETRY_ENABLED,
             defaults.auto_retry_enabled.to_string(),
+        ),
+        (KEY_POLICY_ENABLED, defaults.policy_enabled.to_string()),
+        (
+            KEY_REQUEST_RECORD_ENABLED,
+            defaults.request_record_enabled.to_string(),
         ),
     ] {
         sqlx::query(
@@ -88,7 +95,12 @@ pub async fn get_runtime_settings(
     let defaults = RuntimeSettings::from_config(config);
 
     Ok(RuntimeSettings {
-        max_body_bytes: read_i64(&values, KEY_MAX_BODY_BYTES, defaults.max_body_bytes),
+        policy_enabled: read_bool(&values, KEY_POLICY_ENABLED, defaults.policy_enabled),
+        request_record_enabled: read_bool(
+            &values,
+            KEY_REQUEST_RECORD_ENABLED,
+            defaults.request_record_enabled,
+        ),
         response_header_timeout_ms: read_i64(
             &values,
             KEY_RESPONSE_HEADER_TIMEOUT_MS,
@@ -110,7 +122,6 @@ pub async fn save_runtime_settings(
 ) -> Result<(), sqlx::Error> {
     let mut tx = pool.begin().await?;
     for (key, value) in [
-        (KEY_MAX_BODY_BYTES, settings.max_body_bytes.to_string()),
         (
             KEY_RESPONSE_HEADER_TIMEOUT_MS,
             settings.response_header_timeout_ms.to_string(),
@@ -123,6 +134,11 @@ pub async fn save_runtime_settings(
         (
             KEY_AUTO_RETRY_ENABLED,
             settings.auto_retry_enabled.to_string(),
+        ),
+        (KEY_POLICY_ENABLED, settings.policy_enabled.to_string()),
+        (
+            KEY_REQUEST_RECORD_ENABLED,
+            settings.request_record_enabled.to_string(),
         ),
     ] {
         sqlx::query(

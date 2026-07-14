@@ -3,83 +3,55 @@
 {% block title %}上游 - oai-proxy{% endblock %}
 
 {% block content %}
-<section class="section-title">
+<section class="section-title page-heading">
   <div>
-    <h1>上游渠道</h1>
-    <p>代理会按启用上游顺序串行 attempt；多个上游会轮询切换，单个上游则重新发起新请求。</p>
+    <span class="eyebrow">Upstream</span>
+    <h1>上游配置</h1>
+    <p>当前只支持单个上游 Base URL。客户端请求头、Authorization、query 和 body 会原样转发到该地址。</p>
   </div>
 </section>
+
+{% if has_message %}
+<div class="alert success">{{ message }}</div>
+{% endif %}
 
 {% if has_error %}
 <div class="alert error">{{ error }}</div>
 {% endif %}
 
 <section class="card">
-  <h2>新增上游</h2>
-  <form class="form-grid" method="post" action="/admin/upstreams">
-    <label>
-      名称
-      <input name="name" placeholder="default" required>
-    </label>
-    <label>
-      上游服务地址
-      <input name="base_url" placeholder="https://api.example.com" required>
-    </label>
-    <label>
-      上游 API Key
-      <input name="api_key" type="password" placeholder="sk-...">
-    </label>
-    <label>
-      响应头超时覆盖 ms
-      <input name="response_header_timeout_ms" type="number" min="1" placeholder="留空使用全局">
-    </label>
-    <label>
-      首 token 超时覆盖 ms
-      <input name="first_token_timeout_ms" type="number" min="1" placeholder="留空使用全局">
-    </label>
-    <label>
-      最大 attempt 覆盖
-      <input name="max_attempts" type="number" min="1" placeholder="留空使用全局">
-    </label>
-    <label class="checkbox-line">
-      <input name="enabled" type="checkbox" checked>
-      启用
-    </label>
-    <button type="submit">创建上游</button>
-  </form>
-</section>
-
-<section class="card">
-  <h2>已配置上游</h2>
-  <div class="table-wrap">
-    <table>
-      <thead>
-        <tr>
-          <th>ID</th>
-          <th>名称</th>
-          <th>上游服务地址</th>
-          <th>上游 API Key</th>
-          <th>启用</th>
-          <th>Header ms</th>
-          <th>First token ms</th>
-          <th>Max attempts</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for upstream in upstreams %}
-        <tr>
-          <td>{{ upstream.id }}</td>
-          <td>{{ upstream.name }}</td>
-          <td><code>{{ upstream.base_url }}</code></td>
-          <td>{{ upstream.masked_api_key }}</td>
-          <td>{% if upstream.enabled %}是{% else %}否{% endif %}</td>
-          <td>{{ upstream.response_header_timeout_ms }}</td>
-          <td>{{ upstream.first_token_timeout_ms }}</td>
-          <td>{{ upstream.max_attempts }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+  <div class="card-header">
+    <div>
+      <span class="eyebrow">Base URL</span>
+      <h2>上游服务地址</h2>
+      <p>填写服务提供方的基础地址，例如 <code>https://api.example.com</code>。代理会保留客户端请求路径继续转发。</p>
+    </div>
+    {% if has_upstream %}
+    <span class="pill pill-success">已配置</span>
+    {% else %}
+    <span class="pill pill-muted">未配置</span>
+    {% endif %}
   </div>
+
+  <form class="inline-form" method="post" action="/admin/upstreams" hx-post="/admin/upstreams" hx-target="body" hx-swap="outerHTML">
+    <label>
+      上游 Base URL
+      <input name="base_url" placeholder="https://api.example.com" value="{{ upstream.base_url }}" required>
+    </label>
+    <button type="submit">保存上游</button>
+  </form>
+
+  <dl class="settings-list endpoint-list">
+    <div>
+      <dt>当前 Base URL</dt>
+      <dd>
+        {% if has_upstream %}
+        <code>{{ upstream.base_url }}</code>
+        {% else %}
+        <span class="muted">尚未配置</span>
+        {% endif %}
+      </dd>
+    </div>
+  </dl>
 </section>
 {% endblock %}

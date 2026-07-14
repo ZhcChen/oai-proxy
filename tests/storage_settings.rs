@@ -13,12 +13,15 @@ async fn ensure_defaults_and_update_runtime_settings() -> anyhow::Result<()> {
 
     let defaults = storage::settings::get_runtime_settings(&pool, &config).await?;
     assert_eq!(defaults.first_token_timeout_ms, 456);
+    assert!(!defaults.policy_enabled);
+    assert!(defaults.request_record_enabled);
     assert!(defaults.auto_retry_enabled);
 
     storage::settings::save_runtime_settings(
         &pool,
         &RuntimeSettings {
-            max_body_bytes: 4096,
+            policy_enabled: false,
+            request_record_enabled: false,
             response_header_timeout_ms: 111,
             first_token_timeout_ms: 222,
             max_attempts: 1,
@@ -28,7 +31,8 @@ async fn ensure_defaults_and_update_runtime_settings() -> anyhow::Result<()> {
     .await?;
 
     let updated = storage::settings::get_runtime_settings(&pool, &config).await?;
-    assert_eq!(updated.max_body_bytes, 4096);
+    assert!(!updated.policy_enabled);
+    assert!(!updated.request_record_enabled);
     assert_eq!(updated.response_header_timeout_ms, 111);
     assert_eq!(updated.first_token_timeout_ms, 222);
     assert_eq!(updated.max_attempts, 1);
@@ -41,7 +45,6 @@ fn test_config() -> AppConfig {
         bind_host: "127.0.0.1".to_string(),
         database_url: "sqlite::memory:".to_string(),
         data_dir: PathBuf::from("data"),
-        default_max_body_bytes: 2048,
         default_response_header_timeout_ms: 123,
         default_first_token_timeout_ms: 456,
         default_max_attempts: 3,

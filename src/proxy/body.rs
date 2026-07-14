@@ -4,10 +4,10 @@ use serde_json::Value;
 
 use crate::error::AppError;
 
-pub async fn read_limited(body: Body, limit: usize) -> Result<Bytes, AppError> {
-    to_bytes(body, limit)
+pub async fn read_all(body: Body) -> Result<Bytes, AppError> {
+    to_bytes(body, usize::MAX)
         .await
-        .map_err(|error| AppError::PayloadTooLarge(format!("request body exceeds limit: {error}")))
+        .map_err(|error| AppError::BadRequest(format!("failed to read request body: {error}")))
 }
 
 pub fn extract_model(body: &[u8]) -> Option<String> {

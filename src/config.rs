@@ -7,7 +7,6 @@ pub struct AppConfig {
     pub bind_host: String,
     pub database_url: String,
     pub data_dir: PathBuf,
-    pub default_max_body_bytes: i64,
     pub default_response_header_timeout_ms: i64,
     pub default_first_token_timeout_ms: i64,
     pub default_max_attempts: i64,
@@ -25,7 +24,6 @@ impl AppConfig {
             bind_host: env::var("OAI_PROXY_BIND").unwrap_or_else(|_| "127.0.0.1".to_string()),
             database_url,
             data_dir,
-            default_max_body_bytes: env_i64("OAI_PROXY_MAX_BODY_BYTES", 2 * 1024 * 1024),
             default_response_header_timeout_ms: env_i64(
                 "OAI_PROXY_RESPONSE_HEADER_TIMEOUT_MS",
                 15_000,

@@ -58,6 +58,8 @@ async fn request_and_attempt_records_are_listed_newest_first() -> anyhow::Result
         Some("timeout"),
     )
     .await?;
+    storage::records::save_request_body(&pool, "req-1", br#"{"model":"model-a"}"#).await?;
+    storage::records::save_response_body(&pool, "req-1", b"data: done\n\n").await?;
 
     let requests = storage::records::list_recent_requests(&pool, 10).await?;
     assert_eq!(requests.len(), 1);
@@ -70,6 +72,17 @@ async fn request_and_attempt_records_are_listed_newest_first() -> anyhow::Result
         attempts[0].timeout_reason.as_deref(),
         Some("first_token_timeout")
     );
+    let payload = storage::records::get_payload(&pool, "req-1")
+        .await?
+        .expect("payload is saved");
+    assert_eq!(payload.request_body, br#"{"model":"model-a"}"#);
+    assert_eq!(payload.request_body_bytes, 19);
+    assert_eq!(payload.request_body_complete, 1);
+    assert_eq!(payload.request_body_error, None);
+    assert_eq!(payload.response_body, b"data: done\n\n");
+    assert_eq!(payload.response_body_bytes, 12);
+    assert_eq!(payload.response_body_complete, 1);
+    assert_eq!(payload.response_body_error, None);
     Ok(())
 }
 
@@ -78,7 +91,6 @@ fn test_config() -> AppConfig {
         bind_host: "127.0.0.1".to_string(),
         database_url: "sqlite::memory:".to_string(),
         data_dir: PathBuf::from("data"),
-        default_max_body_bytes: 1024 * 1024,
         default_response_header_timeout_ms: 1000,
         default_first_token_timeout_ms: 1000,
         default_max_attempts: 2,

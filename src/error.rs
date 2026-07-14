@@ -14,10 +14,6 @@ pub enum AppError {
     #[error("{0}")]
     BadRequest(String),
     #[error("{0}")]
-    PayloadTooLarge(String),
-    #[error("{0}")]
-    Unauthorized(String),
-    #[error("{0}")]
     Internal(String),
 }
 
@@ -25,8 +21,6 @@ impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
             AppError::BadRequest(message) => (StatusCode::BAD_REQUEST, message),
-            AppError::PayloadTooLarge(message) => (StatusCode::PAYLOAD_TOO_LARGE, message),
-            AppError::Unauthorized(message) => (StatusCode::UNAUTHORIZED, message),
             AppError::Database(_)
             | AppError::Template(_)
             | AppError::HttpClient(_)

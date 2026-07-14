@@ -1,4 +1,3 @@
-pub mod proxy_keys;
 pub mod records;
 pub mod settings;
 pub mod upstreams;
@@ -38,26 +37,4 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::migrate::MigrateErro
 
 pub(crate) fn now() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
-}
-
-pub(crate) fn mask_secret(secret: &str) -> String {
-    if secret.is_empty() {
-        return "".to_string();
-    }
-
-    let chars: Vec<char> = secret.chars().collect();
-    if chars.len() <= 8 {
-        return "****".to_string();
-    }
-
-    let head: String = chars.iter().take(4).collect();
-    let tail: String = chars
-        .iter()
-        .rev()
-        .take(4)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect();
-    format!("{head}****{tail}")
 }

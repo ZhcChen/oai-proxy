@@ -1,20 +1,18 @@
 use askama::Template;
 use axum::{
     extract::{Form, State},
-    http::{HeaderMap, HeaderValue, header},
+    http::{HeaderMap, header},
     response::{Html, IntoResponse, Response},
 };
 use serde::Deserialize;
-use uuid::Uuid;
 
 use crate::{
     app::AppState,
     error::AppError,
     storage::{
-        proxy_keys::{self, ProxyKeyView},
         records::{self, RequestRecord},
         settings::{self, RuntimeSettings},
-        upstreams::{self, NewUpstream, UpstreamView},
+        upstreams::{self, UpstreamError, UpstreamView},
     },
 };
 
@@ -34,9 +32,6 @@ struct DashboardTemplate {
 struct SettingsTemplate {
     settings: RuntimeSettings,
     api_base_url: String,
-    proxy_keys: Vec<ProxyKeyTemplateView>,
-    generated_api_key: String,
-    has_generated_api_key: bool,
     message: String,
     has_message: bool,
 }
@@ -44,7 +39,10 @@ struct SettingsTemplate {
 #[derive(Template)]
 #[template(path = "upstreams.html")]
 struct UpstreamsTemplate {
-    upstreams: Vec<UpstreamView>,
+    upstream: UpstreamView,
+    has_upstream: bool,
+    message: String,
+    has_message: bool,
     error: String,
     has_error: bool,
 }
@@ -62,25 +60,6 @@ struct RequestsTableTemplate {
 }
 
 #[derive(Clone)]
-struct ProxyKeyTemplateView {
-    id: i64,
-    name: String,
-    enabled_label: String,
-    created_at: String,
-}
-
-impl From<ProxyKeyView> for ProxyKeyTemplateView {
-    fn from(key: ProxyKeyView) -> Self {
-        Self {
-            id: key.id,
-            name: key.name,
-            enabled_label: if key.enabled == 1 { "启用" } else { "停用" }.to_string(),
-            created_at: key.created_at,
-        }
-    }
-}
-
-#[derive(Clone)]
 struct RequestRecordView {
     id: String,
     method: String,
@@ -91,6 +70,12 @@ struct RequestRecordView {
     attempt_count: i64,
     final_http_status: String,
     retry_count: i64,
+    response_header_ms: String,
+    first_token_ms: String,
+    request_body_bytes: String,
+    request_body_complete: String,
+    response_body_bytes: String,
+    response_body_complete: String,
     created_at: String,
     duration_ms: String,
     error_message: String,
@@ -111,6 +96,24 @@ impl From<RequestRecord> for RequestRecordView {
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "-".to_string()),
             retry_count: record.retry_count,
+            response_header_ms: record
+                .response_header_ms
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            first_token_ms: record
+                .first_token_ms
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            request_body_bytes: record
+                .request_body_bytes
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            request_body_complete: complete_label(record.request_body_complete),
+            response_body_bytes: record
+                .response_body_bytes
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            response_body_complete: complete_label(record.response_body_complete),
             created_at: record.created_at,
             duration_ms: record
                 .duration_ms
@@ -121,9 +124,19 @@ impl From<RequestRecord> for RequestRecordView {
     }
 }
 
+fn complete_label(value: Option<i64>) -> String {
+    match value {
+        Some(1) => "完整".to_string(),
+        Some(_) => "部分".to_string(),
+        None => "-".to_string(),
+    }
+}
+
 #[derive(Deserialize)]
 pub struct SettingsForm {
-    max_body_bytes: i64,
+    settings_form_version: Option<String>,
+    policy_enabled: Option<String>,
+    request_record_enabled: Option<String>,
     response_header_timeout_ms: i64,
     first_token_timeout_ms: i64,
     max_attempts: i64,
@@ -131,23 +144,12 @@ pub struct SettingsForm {
 }
 
 #[derive(Deserialize)]
-pub struct CreateUpstreamForm {
-    name: String,
+pub struct SaveUpstreamForm {
     base_url: String,
-    api_key: String,
-    enabled: Option<String>,
-    response_header_timeout_ms: Option<String>,
-    first_token_timeout_ms: Option<String>,
-    max_attempts: Option<String>,
-}
-
-#[derive(Deserialize)]
-pub struct GenerateApiKeyForm {
-    name: Option<String>,
 }
 
 pub async fn dashboard(State(state): State<AppState>) -> Result<Response, AppError> {
-    let settings = settings::get_runtime_settings(&state.pool, &state.config).await?;
+    let settings = state.runtime.snapshot().settings;
     let requests = records::list_recent_requests(&state.pool, 10)
         .await?
         .into_iter()
@@ -155,7 +157,7 @@ pub async fn dashboard(State(state): State<AppState>) -> Result<Response, AppErr
         .collect();
     render(DashboardTemplate {
         settings,
-        upstream_count: upstreams::count_enabled(&state.pool).await?,
+        upstream_count: upstreams::count_configured(&state.pool).await?,
         total_requests: records::total_requests(&state.pool).await?,
         success_requests: records::count_by_status(&state.pool, "success").await?
             + records::count_by_status(&state.pool, "retried_success").await?,
@@ -168,8 +170,8 @@ pub async fn settings_page(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    let settings = settings::get_runtime_settings(&state.pool, &state.config).await?;
-    render_settings(&state, &headers, settings, "", false, "", false).await
+    let settings = state.runtime.snapshot().settings;
+    render_settings(&headers, settings, "", false).await
 }
 
 pub async fn save_settings(
@@ -177,7 +179,6 @@ pub async fn save_settings(
     headers: HeaderMap,
     Form(form): Form<SettingsForm>,
 ) -> Result<Response, AppError> {
-    validate_positive(form.max_body_bytes, "max_body_bytes")?;
     validate_positive(
         form.response_header_timeout_ms,
         "response_header_timeout_ms",
@@ -185,96 +186,58 @@ pub async fn save_settings(
     validate_positive(form.first_token_timeout_ms, "first_token_timeout_ms")?;
     validate_positive(form.max_attempts, "max_attempts")?;
 
+    let current = state.runtime.snapshot().settings;
+    let current_form = form.settings_form_version.as_deref() == Some("2");
     let runtime_settings = RuntimeSettings {
-        max_body_bytes: form.max_body_bytes,
+        policy_enabled: if current_form {
+            form.policy_enabled.is_some()
+        } else {
+            current.policy_enabled
+        },
+        request_record_enabled: if current_form {
+            form.request_record_enabled.is_some()
+        } else {
+            current.request_record_enabled
+        },
         response_header_timeout_ms: form.response_header_timeout_ms,
         first_token_timeout_ms: form.first_token_timeout_ms,
         max_attempts: form.max_attempts,
         auto_retry_enabled: form.auto_retry_enabled.is_some(),
     };
     settings::save_runtime_settings(&state.pool, &runtime_settings).await?;
-    render_settings(
-        &state,
-        &headers,
-        runtime_settings,
-        "配置已保存",
-        true,
-        "",
-        false,
-    )
-    .await
-}
-
-pub async fn generate_api_key(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Form(form): Form<GenerateApiKeyForm>,
-) -> Result<Response, AppError> {
-    let settings = settings::get_runtime_settings(&state.pool, &state.config).await?;
-    let secret = format!("opk_{}", Uuid::new_v4().simple());
-    let name = form
-        .name
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| format!("key-{}", Uuid::new_v4().simple()));
-    if proxy_keys::name_exists(&state.pool, &name).await? {
-        return render_settings(
-            &state,
-            &headers,
-            settings,
-            "API Key 名称已存在，请换一个名称。",
-            true,
-            "",
-            false,
-        )
-        .await;
-    }
-
-    proxy_keys::create(&state.pool, &name, &secret).await?;
-    let mut response = render_settings(
-        &state,
-        &headers,
-        settings,
-        "API Key 已生成，请立即复制保存。页面刷新后不会再显示明文。",
-        true,
-        &secret,
-        true,
-    )
-    .await?;
-    response.headers_mut().insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("no-store, max-age=0"),
-    );
-    Ok(response)
+    state.refresh_runtime().await?;
+    render_settings(&headers, runtime_settings, "配置已保存", true).await
 }
 
 pub async fn upstreams_page(State(state): State<AppState>) -> Result<Response, AppError> {
-    render_upstreams(&state, "", false).await
+    render_upstreams(&state, "", false, "", false).await
 }
 
-pub async fn create_upstream(
+pub async fn save_upstream(
     State(state): State<AppState>,
-    Form(form): Form<CreateUpstreamForm>,
+    _headers: HeaderMap,
+    Form(form): Form<SaveUpstreamForm>,
 ) -> Result<Response, AppError> {
-    if form.name.trim().is_empty() || form.base_url.trim().is_empty() {
-        return render_upstreams(&state, "名称和上游服务地址必填", true).await;
+    if form.base_url.trim().is_empty() {
+        return render_upstreams(&state, "", false, "上游 Base URL 必填", true).await;
     }
 
-    let upstream = NewUpstream {
-        name: form.name,
-        base_url: form.base_url,
-        api_key: form.api_key,
-        enabled: form.enabled.is_some(),
-        response_header_timeout_ms: parse_optional_i64(form.response_header_timeout_ms)?,
-        first_token_timeout_ms: parse_optional_i64(form.first_token_timeout_ms)?,
-        max_attempts: parse_optional_i64(form.max_attempts)?,
-    };
-
-    match upstreams::create(&state.pool, &upstream).await {
-        Ok(_) => render_upstreams(&state, "", false).await,
-        Err(error) => render_upstreams(&state, &format!("创建上游失败：{error}"), true).await,
+    match upstreams::save_single_base_url(&state.pool, &form.base_url).await {
+        Ok(()) => {
+            state.refresh_runtime().await?;
+            render_upstreams(&state, "上游 Base URL 已保存", true, "", false).await
+        }
+        Err(UpstreamError::InvalidBaseUrl(error)) => {
+            render_upstreams(
+                &state,
+                "",
+                false,
+                &format!("上游 Base URL 无效：{error}"),
+                true,
+            )
+            .await
+        }
+        Err(UpstreamError::Database(error)) => Err(AppError::Database(error)),
     }
 }
 
@@ -297,26 +260,14 @@ pub async fn requests_partial(State(state): State<AppState>) -> Result<Response,
 }
 
 async fn render_settings(
-    state: &AppState,
     headers: &HeaderMap,
     settings: RuntimeSettings,
     message: &str,
     has_message: bool,
-    generated_api_key: &str,
-    has_generated_api_key: bool,
 ) -> Result<Response, AppError> {
-    let proxy_keys = proxy_keys::list_all(&state.pool)
-        .await?
-        .into_iter()
-        .map(ProxyKeyTemplateView::from)
-        .collect();
-
     render(SettingsTemplate {
         settings,
         api_base_url: api_base_url(headers),
-        proxy_keys,
-        generated_api_key: generated_api_key.to_string(),
-        has_generated_api_key,
         message: message.to_string(),
         has_message,
     })
@@ -324,19 +275,32 @@ async fn render_settings(
 
 async fn render_upstreams(
     state: &AppState,
+    message: &str,
+    has_message: bool,
     error: &str,
     has_error: bool,
 ) -> Result<Response, AppError> {
-    let upstreams = upstreams::list_all(&state.pool)
+    let upstream = upstreams::get_configured(&state.pool)
         .await?
-        .into_iter()
-        .map(UpstreamView::from)
-        .collect();
+        .map(UpstreamView::from);
+    let has_upstream = upstream.is_some();
     render(UpstreamsTemplate {
-        upstreams,
+        upstream: upstream.unwrap_or_else(empty_upstream_view),
+        has_upstream,
+        message: message.to_string(),
+        has_message,
         error: error.to_string(),
         has_error,
     })
+}
+
+fn empty_upstream_view() -> UpstreamView {
+    UpstreamView {
+        id: 0,
+        name: String::new(),
+        base_url: String::new(),
+        created_at: String::new(),
+    }
 }
 
 fn validate_positive(value: i64, field: &str) -> Result<(), AppError> {
@@ -345,24 +309,6 @@ fn validate_positive(value: i64, field: &str) -> Result<(), AppError> {
     } else {
         Err(AppError::BadRequest(format!("{field} 必须大于 0")))
     }
-}
-
-fn parse_optional_i64(value: Option<String>) -> Result<Option<i64>, AppError> {
-    let Some(value) = value else {
-        return Ok(None);
-    };
-    let value = value.trim();
-    if value.is_empty() {
-        return Ok(None);
-    }
-
-    let parsed = value
-        .parse::<i64>()
-        .map_err(|_| AppError::BadRequest(format!("{value} 不是有效整数")))?;
-    if parsed <= 0 {
-        return Err(AppError::BadRequest("可选超时值必须大于 0".to_string()));
-    }
-    Ok(Some(parsed))
 }
 
 fn render<T: Template>(template: T) -> Result<Response, AppError> {

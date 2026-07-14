@@ -3,10 +3,11 @@
 {% block title %}配置 - oai-proxy{% endblock %}
 
 {% block content %}
-<section class="section-title">
+<section class="section-title page-heading">
   <div>
+    <span class="eyebrow">Control plane</span>
     <h1>全局配置</h1>
-    <p>这些配置会在每次代理请求开始时读取，用于控制请求体缓存、响应头等待和首 token 等待。</p>
+    <p>这些配置保存到 SQLite，并在启动和页面保存后刷新到内存缓存。</p>
   </div>
 </section>
 
@@ -15,68 +16,52 @@
 {% endif %}
 
 <section class="card">
-  <div class="section-title">
+  <div class="card-header">
     <div>
+      <span class="eyebrow">Client integration</span>
       <h2>客户端接入信息</h2>
-      <p>Base URL 根据当前访问域名自动生成，不需要手工配置。</p>
+      <p>Base URL 根据当前访问域名自动生成。代理不做入口 API Key 校验，请把客户端鉴权头原样发给上游。</p>
     </div>
   </div>
-  <dl class="settings-list">
+  <dl class="settings-list endpoint-list">
     <div><dt>Base URL</dt><dd><code>{{ api_base_url }}</code></dd></div>
     <div><dt>Chat Completions</dt><dd><code>{{ api_base_url }}/v1/chat/completions</code></dd></div>
     <div><dt>Responses</dt><dd><code>{{ api_base_url }}/v1/responses</code></dd></div>
   </dl>
 </section>
 
-<section class="card">
-  <div class="section-title">
+<form class="card settings-form" method="post" action="/admin/settings" hx-post="/admin/settings" hx-target="body" hx-swap="outerHTML">
+  <input name="settings_form_version" type="hidden" value="2">
+  <div class="card-header full-span">
     <div>
-      <h2>代理 API Key</h2>
-      <p>生成后客户端通过 <code>Authorization: Bearer &lt;api_key&gt;</code> 调用代理入口。</p>
+      <span class="eyebrow">Forward policy</span>
+      <h2>策略层参数</h2>
+      <p>策略层关闭时只做纯代理转发；开启后才执行首 token 超时、自动重试和记录逻辑。</p>
     </div>
   </div>
-  {% if has_generated_api_key %}
-  <div class="alert success">
-    <strong>新 API Key：</strong>
-    <code>{{ generated_api_key }}</code>
-  </div>
-  {% endif %}
-  <form class="form-grid" method="post" action="/admin/api-keys" hx-post="/admin/api-keys" hx-target="body" hx-swap="outerHTML">
-    <label>
-      名称
-      <input name="name" placeholder="例如 laptop / server / client-a">
+  <div class="switch-grid full-span">
+    <label class="switch-card">
+      <input name="policy_enabled" type="checkbox" {% if settings.policy_enabled %}checked{% endif %}>
+      <span>
+        <strong>启用策略层</strong>
+        <small>首 token 超时、响应头超时、自动重试和后续过滤逻辑</small>
+      </span>
     </label>
-    <button type="submit">生成 API Key</button>
-  </form>
-  <div class="table-wrap">
-    <table>
-      <thead>
-        <tr>
-          <th>ID</th>
-          <th>名称</th>
-          <th>状态</th>
-          <th>创建时间</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for key in proxy_keys %}
-        <tr>
-          <td>{{ key.id }}</td>
-          <td>{{ key.name }}</td>
-          <td>{{ key.enabled_label }}</td>
-          <td><code>{{ key.created_at }}</code></td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+    <label class="switch-card">
+      <input name="request_record_enabled" type="checkbox" {% if settings.request_record_enabled %}checked{% endif %}>
+      <span>
+        <strong>保存请求记录</strong>
+        <small>记录写入 SQLite，后续用于页面查询和统计分析</small>
+      </span>
+    </label>
+    <label class="switch-card">
+      <input name="auto_retry_enabled" type="checkbox" {% if settings.auto_retry_enabled %}checked{% endif %}>
+      <span>
+        <strong>启用自动重试</strong>
+        <small>首 token 或响应头超时后继续尝试下一个 attempt</small>
+      </span>
+    </label>
   </div>
-</section>
-
-<form class="card form-grid" method="post" action="/admin/settings" hx-post="/admin/settings" hx-target="body" hx-swap="outerHTML">
-  <label>
-    请求体上限 bytes
-    <input name="max_body_bytes" type="number" min="1" value="{{ settings.max_body_bytes }}">
-  </label>
   <label>
     等待响应头超时 ms
     <input name="response_header_timeout_ms" type="number" min="1" value="{{ settings.response_header_timeout_ms }}">
@@ -89,10 +74,8 @@
     最大 attempt
     <input name="max_attempts" type="number" min="1" value="{{ settings.max_attempts }}">
   </label>
-  <label class="checkbox-line">
-    <input name="auto_retry_enabled" type="checkbox" {% if settings.auto_retry_enabled %}checked{% endif %}>
-    启用自动重试
-  </label>
-  <button type="submit">保存配置</button>
+  <div class="form-actions full-span">
+    <button type="submit">保存配置</button>
+  </div>
 </form>
 {% endblock %}

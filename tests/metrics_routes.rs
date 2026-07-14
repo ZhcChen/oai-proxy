@@ -20,7 +20,7 @@ async fn metrics_returns_request_and_timeout_counters() -> anyhow::Result<()> {
     storage::migrate(&pool).await?;
     storage::settings::ensure_defaults(&pool, &config).await?;
     seed_timeout_record(&pool).await?;
-    let state = app::AppState::new(config, pool)?;
+    let state = app::AppState::new(config, pool).await?;
     let router = app::router(state);
 
     let response = router
@@ -89,7 +89,6 @@ fn test_config() -> AppConfig {
         bind_host: "127.0.0.1".to_string(),
         database_url: "sqlite::memory:".to_string(),
         data_dir: PathBuf::from("data"),
-        default_max_body_bytes: 1024 * 1024,
         default_response_header_timeout_ms: 1000,
         default_first_token_timeout_ms: 1000,
         default_max_attempts: 2,

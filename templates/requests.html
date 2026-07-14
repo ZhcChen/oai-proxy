@@ -3,14 +3,22 @@
 {% block title %}请求记录 - oai-proxy{% endblock %}
 
 {% block content %}
-<section class="section-title">
+<section class="section-title page-heading">
   <div>
+    <span class="eyebrow">Traffic log</span>
     <h1>请求记录</h1>
-    <p>记录 request 与最终状态；attempt 明细已写入 SQLite，后续可扩展详情页。</p>
+    <p>记录每次 request 的完整请求/响应正文、最终响应、响应头耗时、首 token 耗时和完整响应耗时；attempt 明细同步写入 SQLite。</p>
   </div>
 </section>
 
 <section class="card">
+  <div class="card-header">
+    <div>
+      <span class="eyebrow">Auto refresh</span>
+      <h2>最近请求</h2>
+    </div>
+    <span class="pill">每 5 秒刷新</span>
+  </div>
   <div
     hx-get="/admin/partials/requests"
     hx-trigger="every 5s"

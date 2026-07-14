@@ -1,9 +1,7 @@
 use axum::{
-    Json,
     body::Body,
     extract::State,
-    http::{HeaderMap, Method, Response, StatusCode, Uri},
-    response::IntoResponse,
+    http::{HeaderMap, Method, Response, StatusCode, Uri, header},
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -11,19 +9,18 @@ use uuid::Uuid;
 use crate::{
     app::AppState,
     error::AppError,
+    recording::{CompleteRequest, FinishAttemptRecord, RecordBodyChunk},
     storage::{
-        proxy_keys,
-        records::{self, FinishAttempt, NewAttemptRecord, NewRequestRecord},
+        records::{FinishAttempt, NewAttemptRecord, NewRequestRecord},
         settings,
-        upstreams::{self, Upstream},
+        upstreams::Upstream,
     },
 };
 
 use super::{
     attempt::{self, AttemptOutcome, AttemptRequest, StreamRecordContext},
-    body, headers,
+    body, direct,
     semantic_token::EndpointKind,
-    upstream,
 };
 
 pub async fn proxy_openai(
@@ -33,64 +30,81 @@ pub async fn proxy_openai(
     headers: HeaderMap,
     body: Body,
 ) -> Result<Response<Body>, AppError> {
-    if !proxy_keys::is_authorized(&state.pool, headers::bearer_token(&headers)).await? {
-        return Ok(openai_error(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "invalid proxy authorization",
-        ));
-    }
-
-    let runtime_settings = match settings::get_runtime_settings(&state.pool, &state.config).await {
-        Ok(settings) => settings,
-        Err(error) => {
-            tracing::error!(error = %error, "failed to load runtime proxy settings");
-            return Ok(openai_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "settings_error",
-                "failed to load proxy settings",
-            ));
-        }
-    };
-    let request_body =
-        match body::read_limited(body, runtime_settings.max_body_bytes as usize).await {
-            Ok(body) => body,
-            Err(error) => {
-                return Ok(openai_error(
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    "payload_too_large",
-                    &error.to_string(),
-                ));
-            }
-        };
+    let runtime = state.runtime.snapshot();
+    let upstreams = runtime.configured_upstreams();
+    let runtime_settings = runtime.settings;
     let request_id = Uuid::new_v4().to_string();
     let endpoint = uri
         .path_and_query()
         .map(|value| value.as_str().to_string())
         .unwrap_or_else(|| uri.path().to_string());
-    let model = body::extract_model(&request_body);
 
-    let records_enabled = match records::create_request(
-        &state.pool,
-        &NewRequestRecord {
-            id: request_id.clone(),
-            method: method.to_string(),
-            endpoint: endpoint.clone(),
-            model,
-        },
-    )
-    .await
-    {
-        Ok(_) => true,
-        Err(error) => {
-            tracing::warn!(error = %error, request_id = %request_id, "failed to create request record");
+    if !runtime_settings.policy_enabled {
+        let records_enabled = if runtime_settings.request_record_enabled {
+            state.record_writer.create_request(NewRequestRecord {
+                id: request_id.clone(),
+                method: method.to_string(),
+                endpoint: endpoint.clone(),
+                model: None,
+            })
+        } else {
             false
-        }
-    };
+        };
 
-    let upstreams = upstreams::list_enabled(&state.pool).await?;
+        if upstreams.is_empty() {
+            let response_body = openai_error_payload("no_upstream", "no upstream configured");
+            if records_enabled {
+                complete_request_best_effort(
+                    &state,
+                    &request_id,
+                    "no_upstream",
+                    None,
+                    0,
+                    Some(StatusCode::SERVICE_UNAVAILABLE.as_u16() as i64),
+                    Some("no upstream configured"),
+                );
+                save_response_body_best_effort(&state, &request_id, response_body.clone());
+            }
+            return Ok(openai_error(StatusCode::SERVICE_UNAVAILABLE, response_body));
+        }
+
+        let upstream = &upstreams[0];
+        let attempt_id = Uuid::new_v4().to_string();
+        let attempt_records_enabled = if records_enabled {
+            state.record_writer.create_attempt(NewAttemptRecord {
+                id: attempt_id.clone(),
+                request_id: request_id.clone(),
+                attempt_index: 1,
+                upstream_id: Some(upstream.id),
+                upstream_name: upstream.name.clone(),
+            })
+        } else {
+            false
+        };
+        let record_context = records_enabled.then(|| direct::RecordContext {
+            record_writer: state.record_writer.clone(),
+            request_id: request_id.clone(),
+            attempt_id: attempt_records_enabled.then_some(attempt_id),
+            upstream_name: upstream.name.clone(),
+            endpoint: EndpointKind::from_path(uri.path()),
+        });
+
+        return direct::pass(&state, method, uri, headers, body, upstream, record_context).await;
+    }
+
     if upstreams.is_empty() {
+        let records_enabled = if runtime_settings.request_record_enabled {
+            state.record_writer.create_request(NewRequestRecord {
+                id: request_id.clone(),
+                method: method.to_string(),
+                endpoint,
+                model: None,
+            })
+        } else {
+            false
+        };
         if records_enabled {
+            let response_body = openai_error_payload("no_upstream", "no upstream configured");
             complete_request_best_effort(
                 &state,
                 &request_id,
@@ -98,15 +112,40 @@ pub async fn proxy_openai(
                 None,
                 0,
                 Some(StatusCode::SERVICE_UNAVAILABLE.as_u16() as i64),
-                Some("no enabled upstream configured"),
-            )
-            .await;
+                Some("no upstream configured"),
+            );
+            save_response_body_best_effort(&state, &request_id, response_body.clone());
+            return Ok(openai_error(StatusCode::SERVICE_UNAVAILABLE, response_body));
         }
         return Ok(openai_error(
             StatusCode::SERVICE_UNAVAILABLE,
-            "no_upstream",
-            "no enabled upstream configured",
+            openai_error_payload("no_upstream", "no upstream configured"),
         ));
+    }
+
+    let request_body = match body::read_all(body).await {
+        Ok(body) => body,
+        Err(error) => {
+            return Ok(openai_error(
+                StatusCode::BAD_REQUEST,
+                openai_error_payload("invalid_request_body", &error.to_string()),
+            ));
+        }
+    };
+    let model = body::extract_model(&request_body);
+
+    let records_enabled = if runtime_settings.request_record_enabled {
+        state.record_writer.create_request(NewRequestRecord {
+            id: request_id.clone(),
+            method: method.to_string(),
+            endpoint: endpoint.clone(),
+            model,
+        })
+    } else {
+        false
+    };
+    if records_enabled {
+        save_request_body_best_effort(&state, &request_id, request_body.to_vec());
     }
 
     let endpoint_kind = EndpointKind::from_path(uri.path());
@@ -118,29 +157,13 @@ pub async fn proxy_openai(
         let upstream = &upstreams[*upstream_index];
         let attempt_id = Uuid::new_v4().to_string();
         let attempt_records_enabled = if records_enabled {
-            match records::create_attempt(
-                &state.pool,
-                &NewAttemptRecord {
-                    id: attempt_id.clone(),
-                    request_id: request_id.clone(),
-                    attempt_index: attempt_index as i64,
-                    upstream_id: Some(upstream.id),
-                    upstream_name: upstream.name.clone(),
-                },
-            )
-            .await
-            {
-                Ok(_) => true,
-                Err(error) => {
-                    tracing::warn!(
-                        error = %error,
-                        request_id = %request_id,
-                        attempt_index,
-                        "failed to create attempt record"
-                    );
-                    false
-                }
-            }
+            state.record_writer.create_attempt(NewAttemptRecord {
+                id: attempt_id.clone(),
+                request_id: request_id.clone(),
+                attempt_index: attempt_index as i64,
+                upstream_id: Some(upstream.id),
+                upstream_name: upstream.name.clone(),
+            })
         } else {
             false
         };
@@ -150,7 +173,7 @@ pub async fn proxy_openai(
             "success"
         };
         let stream_record_context = attempt_records_enabled.then(|| StreamRecordContext {
-            pool: state.pool.clone(),
+            record_writer: state.record_writer.clone(),
             request_id: request_id.clone(),
             attempt_id: attempt_id.clone(),
             request_status_on_success: request_status_on_success.to_string(),
@@ -195,8 +218,7 @@ pub async fn proxy_openai(
                             error_message: Some(message.to_string()),
                             emitted_to_client: false,
                         },
-                    )
-                    .await;
+                    );
                 }
                 last_failure = Some((
                     attempt::AttemptFailure {
@@ -236,8 +258,9 @@ pub async fn proxy_openai(
                             error_message: None,
                             emitted_to_client,
                         },
-                    )
-                    .await;
+                    );
+                }
+                if records_enabled && !records_deferred {
                     complete_request_best_effort(
                         &state,
                         &request_id,
@@ -246,8 +269,7 @@ pub async fn proxy_openai(
                         attempt_index as i64,
                         Some(http_status),
                         None,
-                    )
-                    .await;
+                    );
                 }
                 return Ok(response);
             }
@@ -274,8 +296,7 @@ pub async fn proxy_openai(
                             error_message: Some(failure.error_message.clone()),
                             emitted_to_client: false,
                         },
-                    )
-                    .await;
+                    );
                 }
                 last_failure = Some((failure, upstream.name.clone()));
             }
@@ -289,6 +310,7 @@ pub async fn proxy_openai(
         "exhausted_failure"
     };
     if records_enabled {
+        let response_body = openai_error_payload(&failure.status, &failure.error_message);
         complete_request_best_effort(
             &state,
             &request_id,
@@ -297,14 +319,14 @@ pub async fn proxy_openai(
             attempt_plan.len() as i64,
             Some(failure.final_http_status.as_u16() as i64),
             Some(&failure.error_message),
-        )
-        .await;
+        );
+        save_response_body_best_effort(&state, &request_id, response_body.clone());
+        return Ok(openai_error(failure.final_http_status, response_body));
     }
 
     Ok(openai_error(
         failure.final_http_status,
-        &failure.status,
-        &failure.error_message,
+        openai_error_payload(&failure.status, &failure.error_message),
     ))
 }
 
@@ -317,10 +339,7 @@ fn build_attempt_plan(
     }
 
     let global = runtime_settings.max_attempts_for_request();
-    let per_upstream_limits: Vec<usize> = upstreams
-        .iter()
-        .map(|item| upstream::max_attempts(item, global))
-        .collect();
+    let per_upstream_limits: Vec<usize> = upstreams.iter().map(|_| global).collect();
     let mut counts = vec![0_usize; upstreams.len()];
     let mut plan = Vec::new();
 
@@ -344,13 +363,14 @@ fn build_attempt_plan(
     plan
 }
 
-async fn finish_attempt_best_effort(state: &AppState, attempt_id: &str, update: FinishAttempt) {
-    if let Err(error) = records::finish_attempt(&state.pool, attempt_id, &update).await {
-        tracing::warn!(error = %error, attempt_id, "failed to finish attempt record");
-    }
+fn finish_attempt_best_effort(state: &AppState, attempt_id: &str, update: FinishAttempt) {
+    state.record_writer.finish_attempt(FinishAttemptRecord {
+        attempt_id: attempt_id.to_string(),
+        update,
+    });
 }
 
-async fn complete_request_best_effort(
+fn complete_request_best_effort(
     state: &AppState,
     request_id: &str,
     status: &str,
@@ -359,31 +379,45 @@ async fn complete_request_best_effort(
     final_http_status: Option<i64>,
     error_message: Option<&str>,
 ) {
-    if let Err(error) = records::complete_request(
-        &state.pool,
-        request_id,
-        status,
-        upstream_name,
+    state.record_writer.complete_request(CompleteRequest {
+        request_id: request_id.to_string(),
+        status: status.to_string(),
+        upstream_name: upstream_name.map(ToOwned::to_owned),
         attempt_count,
         final_http_status,
-        error_message,
-    )
-    .await
-    {
-        tracing::warn!(error = %error, request_id, "failed to complete request record");
-    }
+        error_message: error_message.map(ToOwned::to_owned),
+    });
 }
 
-fn openai_error(status: StatusCode, code: &str, message: &str) -> Response<Body> {
-    (
-        status,
-        Json(json!({
-            "error": {
-                "message": message,
-                "type": "oai_proxy_error",
-                "code": code
-            }
-        })),
-    )
-        .into_response()
+fn save_request_body_best_effort(state: &AppState, request_id: &str, body: Vec<u8>) {
+    state.record_writer.save_request_body(RecordBodyChunk {
+        request_id: request_id.to_string(),
+        body,
+    });
+}
+
+fn save_response_body_best_effort(state: &AppState, request_id: &str, body: Vec<u8>) {
+    state.record_writer.save_response_body(RecordBodyChunk {
+        request_id: request_id.to_string(),
+        body,
+    });
+}
+
+fn openai_error_payload(code: &str, message: &str) -> Vec<u8> {
+    serde_json::to_vec(&json!({
+        "error": {
+            "message": message,
+            "type": "oai_proxy_error",
+            "code": code
+        }
+    }))
+    .expect("OpenAI-compatible error payload should serialize")
+}
+
+fn openai_error(status: StatusCode, body: Vec<u8>) -> Response<Body> {
+    Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body))
+        .expect("response builder should accept JSON error body")
 }

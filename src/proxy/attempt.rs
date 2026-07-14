@@ -16,11 +16,8 @@ use tokio::time::{Instant, timeout};
 use crate::{
     app::AppState,
     error::AppError,
-    storage::{
-        records::{self, FinishAttempt},
-        settings::RuntimeSettings,
-        upstreams::Upstream,
-    },
+    recording::{CompleteRequest, FinishAttemptRecord, FinishBody, RecordBodyChunk, RecordWriter},
+    storage::{records::FinishAttempt, settings::RuntimeSettings, upstreams::Upstream},
 };
 
 use super::{
@@ -70,7 +67,7 @@ pub struct AttemptFailure {
 
 #[derive(Clone)]
 pub struct StreamRecordContext {
-    pub pool: sqlx::SqlitePool,
+    pub record_writer: RecordWriter,
     pub request_id: String,
     pub attempt_id: String,
     pub request_status_on_success: String,
@@ -86,13 +83,9 @@ pub async fn run(input: AttemptRequest<'_>) -> Result<AttemptOutcome, AppError> 
         .http_client
         .request(input.method.clone(), target_url)
         .body(input.request_body.clone());
-    let request =
-        headers::copy_request_headers(input.inbound_headers, request, &input.upstream.api_key);
+    let request = headers::copy_request_headers(input.inbound_headers, request);
 
-    let header_timeout = Duration::from_millis(upstream::header_timeout_ms(
-        input.upstream,
-        input.settings.response_header_timeout_ms,
-    ) as u64);
+    let header_timeout = Duration::from_millis(input.settings.response_header_timeout_ms as u64);
 
     let response = match timeout(header_timeout, request.send()).await {
         Ok(Ok(response)) => response,
@@ -141,13 +134,29 @@ pub async fn run(input: AttemptRequest<'_>) -> Result<AttemptOutcome, AppError> 
     if is_sse && headers::is_sse_response(response.headers()) && status.is_success() {
         prepare_sse_response(input, response, attempt_started, response_header_ms).await
     } else {
+        let headers = headers::response_headers(response.headers());
+        let records_deferred = input.stream_record_context.is_some();
+        let body = match input.stream_record_context {
+            Some(context) => finalized_response_body(
+                None,
+                response.bytes_stream(),
+                StreamFinalizer {
+                    context,
+                    http_status: status.as_u16() as i64,
+                    response_header_ms,
+                    first_token_ms: None,
+                    emitted_to_client: false,
+                },
+            ),
+            None => Body::from_stream(response.bytes_stream().map(|item| item.map_err(io_error))),
+        };
         Ok(AttemptOutcome::Committed {
             http_status: status.as_u16() as i64,
-            response: response_from_upstream(response, None, input.request_id),
+            response: response_from_parts(status, headers, body),
             response_header_ms,
             first_token_ms: None,
             emitted_to_client: false,
-            records_deferred: false,
+            records_deferred,
         })
     }
 }
@@ -160,10 +169,7 @@ async fn prepare_sse_response(
 ) -> Result<AttemptOutcome, AppError> {
     let status = response.status();
     let headers = headers::response_headers(response.headers());
-    let first_token_timeout = Duration::from_millis(upstream::first_token_timeout_ms(
-        input.upstream,
-        input.settings.first_token_timeout_ms,
-    ) as u64);
+    let first_token_timeout = Duration::from_millis(input.settings.first_token_timeout_ms as u64);
     let first_token_deadline = Instant::now() + first_token_timeout;
     let mut stream = response.bytes_stream();
     let mut parser = SseParser::new();
@@ -238,14 +244,15 @@ async fn prepare_sse_response(
                 let first_token_ms = elapsed_ms(attempt_started);
                 let records_deferred = input.stream_record_context.is_some();
                 let body = match input.stream_record_context {
-                    Some(context) => finalized_sse_body(
-                        initial.freeze(),
+                    Some(context) => finalized_response_body(
+                        Some(initial.freeze()),
                         stream,
                         StreamFinalizer {
                             context,
                             http_status: status.as_u16() as i64,
                             response_header_ms,
-                            first_token_ms,
+                            first_token_ms: Some(first_token_ms),
+                            emitted_to_client: false,
                         },
                     ),
                     None => Body::from_stream(
@@ -254,7 +261,7 @@ async fn prepare_sse_response(
                     ),
                 };
 
-                let response = response_from_parts(status, headers, body, input.request_id);
+                let response = response_from_parts(status, headers, body);
 
                 return Ok(AttemptOutcome::Committed {
                     response,
@@ -283,12 +290,16 @@ async fn prepare_sse_response(
     }
 }
 
-fn finalized_sse_body<S>(initial: Bytes, upstream: S, finalizer: StreamFinalizer) -> Body
+fn finalized_response_body<S>(
+    initial: Option<Bytes>,
+    upstream: S,
+    finalizer: StreamFinalizer,
+) -> Body
 where
     S: futures_util::Stream<Item = Result<Bytes, reqwest::Error>> + Send + Unpin + 'static,
 {
     Body::from_stream(FinalizedSseStream {
-        initial: Some(initial),
+        initial,
         upstream,
         finalizer: Some(finalizer),
         finished: false,
@@ -310,11 +321,19 @@ where
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if let Some(initial) = self.initial.take() {
+            if let Some(finalizer) = self.finalizer.as_mut() {
+                finalizer.record_emitted_chunk(&initial);
+            }
             return Poll::Ready(Some(Ok(initial)));
         }
 
         match Pin::new(&mut self.upstream).poll_next(cx) {
-            Poll::Ready(Some(Ok(bytes))) => Poll::Ready(Some(Ok(bytes))),
+            Poll::Ready(Some(Ok(bytes))) => {
+                if let Some(finalizer) = self.finalizer.as_mut() {
+                    finalizer.record_emitted_chunk(&bytes);
+                }
+                Poll::Ready(Some(Ok(bytes)))
+            }
             Poll::Ready(Some(Err(error))) => {
                 self.finished = true;
                 if let Some(finalizer) = self.finalizer.take() {
@@ -348,10 +367,21 @@ struct StreamFinalizer {
     context: StreamRecordContext,
     http_status: i64,
     response_header_ms: i64,
-    first_token_ms: i64,
+    first_token_ms: Option<i64>,
+    emitted_to_client: bool,
 }
 
 impl StreamFinalizer {
+    fn record_emitted_chunk(&mut self, bytes: &[u8]) {
+        self.emitted_to_client = true;
+        self.context
+            .record_writer
+            .append_response_body(RecordBodyChunk {
+                request_id: self.context.request_id.clone(),
+                body: bytes.to_vec(),
+            });
+    }
+
     fn finish_success(self) {
         let http_status = self.http_status;
         let request_status = self.context.request_status_on_success.clone();
@@ -364,20 +394,22 @@ impl StreamFinalizer {
     }
 
     fn finish_stream_error(self, error_message: String) {
+        let http_status = self.http_status;
         self.spawn_finish(
             "stream_error".to_string(),
             "stream_error".to_string(),
             Some(error_message),
-            Some(StatusCode::BAD_GATEWAY.as_u16() as i64),
+            Some(http_status),
         );
     }
 
     fn finish_client_disconnected(self) {
+        let http_status = self.http_status;
         self.spawn_finish(
             "client_disconnected".to_string(),
             "client_disconnected".to_string(),
             Some("downstream client disconnected before stream completed".to_string()),
-            Some(499),
+            Some(http_status),
         );
     }
 
@@ -388,39 +420,35 @@ impl StreamFinalizer {
         error_message: Option<String>,
         final_http_status: Option<i64>,
     ) {
-        tokio::spawn(async move {
-            if let Err(error) = records::finish_attempt(
-                &self.context.pool,
-                &self.context.attempt_id,
-                &FinishAttempt {
+        self.context.record_writer.finish_response_body(FinishBody {
+            request_id: self.context.request_id.clone(),
+            complete: error_message.is_none(),
+            error_message: error_message.clone(),
+        });
+        self.context
+            .record_writer
+            .finish_attempt(FinishAttemptRecord {
+                attempt_id: self.context.attempt_id.clone(),
+                update: FinishAttempt {
                     status: attempt_status,
                     http_status: Some(self.http_status),
                     response_header_ms: Some(self.response_header_ms),
-                    first_token_ms: Some(self.first_token_ms),
+                    first_token_ms: self.first_token_ms,
                     timeout_reason: None,
                     error_message: error_message.clone(),
-                    emitted_to_client: true,
+                    emitted_to_client: self.emitted_to_client,
                 },
-            )
-            .await
-            {
-                tracing::warn!(error = %error, "failed to finish streamed attempt record");
-            }
-
-            if let Err(error) = records::complete_request(
-                &self.context.pool,
-                &self.context.request_id,
-                &request_status,
-                Some(&self.context.upstream_name),
-                self.context.attempt_count,
+            });
+        self.context
+            .record_writer
+            .complete_request(CompleteRequest {
+                request_id: self.context.request_id,
+                status: request_status,
+                upstream_name: Some(self.context.upstream_name),
+                attempt_count: self.context.attempt_count,
                 final_http_status,
-                error_message.as_deref(),
-            )
-            .await
-            {
-                tracing::warn!(error = %error, "failed to complete streamed request record");
-            }
-        });
+                error_message,
+            });
     }
 }
 
@@ -440,24 +468,10 @@ fn first_token_timeout_failure(
     })
 }
 
-fn response_from_upstream(
-    response: reqwest::Response,
-    body: Option<Body>,
-    request_id: &str,
-) -> Response<Body> {
-    let status = response.status();
-    let headers = headers::response_headers(response.headers());
-    let body = body.unwrap_or_else(|| {
-        Body::from_stream(response.bytes_stream().map(|item| item.map_err(io_error)))
-    });
-    response_from_parts(status, headers, body, request_id)
-}
-
 fn response_from_parts(
     status: reqwest::StatusCode,
     headers: HeaderMap,
     body: Body,
-    request_id: &str,
 ) -> Response<Body> {
     let status = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     let mut response = Response::builder()
@@ -465,10 +479,6 @@ fn response_from_parts(
         .body(body)
         .expect("response builder should accept upstream status");
     response.headers_mut().extend(headers);
-    response.headers_mut().insert(
-        "x-oai-proxy-request-id",
-        headers::openai_request_id_header(request_id),
-    );
     response
 }
 
