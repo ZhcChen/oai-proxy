@@ -33,6 +33,8 @@ pub async fn proxy_openai(
     let runtime = state.runtime.snapshot();
     let upstreams = runtime.configured_upstreams();
     let runtime_settings = runtime.settings;
+    let request_record_enabled =
+        runtime_settings.request_record_enabled && !is_control_plane_path(uri.path());
     let request_id = Uuid::new_v4().to_string();
     let endpoint = uri
         .path_and_query()
@@ -40,7 +42,7 @@ pub async fn proxy_openai(
         .unwrap_or_else(|| uri.path().to_string());
 
     if !runtime_settings.policy_enabled {
-        let records_enabled = if runtime_settings.request_record_enabled {
+        let records_enabled = if request_record_enabled {
             state.record_writer.create_request(NewRequestRecord {
                 id: request_id.clone(),
                 method: method.to_string(),
@@ -93,7 +95,7 @@ pub async fn proxy_openai(
     }
 
     if upstreams.is_empty() {
-        let records_enabled = if runtime_settings.request_record_enabled {
+        let records_enabled = if request_record_enabled {
             state.record_writer.create_request(NewRequestRecord {
                 id: request_id.clone(),
                 method: method.to_string(),
@@ -134,7 +136,7 @@ pub async fn proxy_openai(
     };
     let model = body::extract_model(&request_body);
 
-    let records_enabled = if runtime_settings.request_record_enabled {
+    let records_enabled = if request_record_enabled {
         state.record_writer.create_request(NewRequestRecord {
             id: request_id.clone(),
             method: method.to_string(),
@@ -328,6 +330,15 @@ pub async fn proxy_openai(
         failure.final_http_status,
         openai_error_payload(&failure.status, &failure.error_message),
     ))
+}
+
+fn is_control_plane_path(path: &str) -> bool {
+    matches!(path, "/healthz" | "/metrics" | "/favicon.ico")
+        || path == "/admin"
+        || path.starts_with("/admin/")
+        || path == "/static"
+        || path.starts_with("/static/")
+        || path.starts_with("/.well-known/appspecific/")
 }
 
 fn build_attempt_plan(
